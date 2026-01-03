@@ -1,10 +1,8 @@
 """Configuration models for Repowire."""
-
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 import yaml
 from pydantic import BaseModel, Field
@@ -21,8 +19,10 @@ class RelayConfig(BaseModel):
 class PeerConfig(BaseModel):
     """Configuration for a single peer."""
 
-    tmux_session: str = Field(..., description="Tmux session name")
+    name: str = Field(..., description="Human-readable peer name (folder name)")
+    tmux_session: str | None = Field(None, description="Tmux session:window")
     path: str = Field(..., description="Working directory path")
+    session_id: str | None = Field(None, description="Claude session ID (set by hooks)")
 
 
 class DaemonConfig(BaseModel):
@@ -44,7 +44,7 @@ class Config(BaseModel):
     """Main Repowire configuration."""
 
     relay: RelayConfig = Field(default_factory=RelayConfig)
-    peers: dict[str, PeerConfig] = Field(default_factory=dict)
+    peers: dict[str, PeerConfig] = Field(default_factory=dict)  # keyed by peer name
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
@@ -69,18 +69,49 @@ class Config(BaseModel):
         with open(config_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False)
 
-    def add_peer(self, name: str, tmux_session: str, path: str) -> None:
-        """Add a peer to configuration."""
-        self.peers[name] = PeerConfig(tmux_session=tmux_session, path=path)
+    def add_peer(
+        self,
+        name: str,
+        path: str,
+        tmux_session: str | None = None,
+        session_id: str | None = None,
+    ) -> None:
+        """Add or update a peer by name."""
+        existing = self.peers.get(name)
+        self.peers[name] = PeerConfig(
+            name=name,
+            tmux_session=tmux_session or (existing.tmux_session if existing else None),
+            path=path,
+            session_id=session_id or (existing.session_id if existing else None),
+        )
         self.save()
 
+    def update_peer_session(self, name: str, session_id: str) -> bool:
+        """Update just the session_id for an existing peer."""
+        if name in self.peers:
+            self.peers[name].session_id = session_id
+            self.save()
+            return True
+        return False
+
     def remove_peer(self, name: str) -> bool:
-        """Remove a peer from configuration."""
+        """Remove a peer by name."""
         if name in self.peers:
             del self.peers[name]
             self.save()
             return True
         return False
+
+    def get_peer(self, name: str) -> PeerConfig | None:
+        """Get a peer by name."""
+        return self.peers.get(name)
+
+    def get_peer_by_tmux(self, tmux_session: str) -> PeerConfig | None:
+        """Get a peer by tmux session:window."""
+        for peer in self.peers.values():
+            if peer.tmux_session == tmux_session:
+                return peer
+        return None
 
 
 def load_config() -> Config:

@@ -1,24 +1,44 @@
+"""MCP server - thin client that delegates to daemon."""
 from __future__ import annotations
 
-import asyncio
+import os
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
-from repowire.session.manager import TmuxSessionManager
+from repowire.daemon.client import DaemonClient
 
-_manager: TmuxSessionManager | None = None
+_client: DaemonClient | None = None
+_my_peer_name: str | None = None
 
 
-def get_manager() -> TmuxSessionManager:
-    global _manager
-    if _manager is None:
-        _manager = TmuxSessionManager()
-    return _manager
+def _detect_my_peer_name() -> str:
+    """Detect current peer name from cwd folder name (matches session_handler)."""
+    global _my_peer_name
+    if _my_peer_name:
+        return _my_peer_name
+
+    # Use folder name as peer name (same as session_handler)
+    _my_peer_name = Path.cwd().name
+    return _my_peer_name
+
+
+async def get_client() -> DaemonClient:
+    """Get the daemon client, creating and connecting if needed."""
+    global _client
+    if _client is None:
+        _client = DaemonClient(peer_name=_detect_my_peer_name())
+
+    if not _client._connected:
+        if not await _client.connect(auto_start=True):
+            raise RuntimeError("Cannot connect to repowire daemon")
+
+    return _client
 
 
 def create_mcp_server() -> FastMCP:
+    """Create the MCP server."""
     mcp = FastMCP("repowire")
-    manager = get_manager()
 
     @mcp.tool()
     async def list_peers() -> list[dict]:
@@ -26,7 +46,8 @@ def create_mcp_server() -> FastMCP:
 
         Returns a list of peers with their name, path, machine, and status.
         """
-        return [p.to_dict() for p in manager.list_peers()]
+        client = await get_client()
+        return await client.list_peers()
 
     @mcp.tool()
     async def ask_peer(peer_name: str, query: str) -> str:
@@ -39,11 +60,21 @@ def create_mcp_server() -> FastMCP:
         Returns:
             The peer's response text
         """
-        return await manager.send_query(peer_name, query)
+        client = await get_client()
+        return await client.query(peer_name, query)
 
     @mcp.tool()
     async def notify_peer(peer_name: str, message: str) -> str:
         """Send a notification to a peer (fire-and-forget).
+
+        Use this ONLY when you need to proactively share information with another
+        peer without expecting a response. Examples:
+        - Announcing completion of a task that affects other peers
+        - Sharing a status update or warning
+        - Informing about changes to shared resources
+
+        Do NOT use notify_peer to respond to ask_peer queries - your response
+        is automatically captured and returned to the caller.
 
         Args:
             peer_name: Name of the peer to notify
@@ -52,12 +83,16 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
-        await manager.send_notification(peer_name, message)
+        client = await get_client()
+        await client.notify(peer_name, message)
         return f"Notification sent to {peer_name}"
 
     @mcp.tool()
     async def broadcast(message: str) -> str:
         """Send a message to all online peers.
+
+        Use for announcements that affect everyone, like deployment updates
+        or breaking changes. Do NOT use for responses to queries.
 
         Args:
             message: The message to broadcast
@@ -65,34 +100,18 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
-        await manager.broadcast(message)
-        peers = [p.name for p in manager.list_peers() if p.status.value == "online"]
-        return f"Broadcast sent to: {', '.join(peers) if peers else 'no peers online'}"
-
-    @mcp.tool()
-    async def register_peer(name: str, tmux_session: str, path: str) -> str:
-        """Register a new peer for communication.
-
-        Args:
-            name: Human-readable name for the peer
-            tmux_session: Name of the tmux session running Claude
-            path: Working directory path
-
-        Returns:
-            Confirmation message
-        """
-        manager.config.add_peer(name, tmux_session, path)
-        return f"Peer '{name}' registered (tmux: {tmux_session}, path: {path})"
+        client = await get_client()
+        sent_to = await client.broadcast(message)
+        return f"Broadcast sent to: {', '.join(sent_to) if sent_to else 'no peers online'}"
 
     return mcp
 
 
 async def run_mcp_server() -> None:
-    manager = get_manager()
-    await manager.start()
-
+    """Run the MCP server."""
+    mcp = create_mcp_server()
     try:
-        mcp = create_mcp_server()
         await mcp.run_stdio_async()
     finally:
-        await manager.stop()
+        if _client is not None:
+            await _client.disconnect()

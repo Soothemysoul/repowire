@@ -2,74 +2,57 @@
 
 Mesh network for Claude Code sessions - enables AI agents to communicate.
 
-## Overview
-
-Repowire creates a mesh where Claude Code sessions can communicate with each other. Frontend Claude can ask Backend Claude about API schemas. Infra Claude can notify everyone about deployments. Just like a human engineering team.
-
-```
-┌─────────────┐     "API schema?"     ┌─────────────┐
-│  Frontend   │ ────────────────────► │   Backend   │
-│   Claude    │ ◄──────────────────── │   Claude    │
-│  (tmux)     │   "{id, name, ...}"   │   (tmux)    │
-└─────────────┘                       └─────────────┘
-```
-
-## Installation
-
-```bash
-pip install repowire
-# or
-uv tool install repowire
-```
-
 ## Quick Start
 
-### 1. Install Claude Code hooks
-
 ```bash
-repowire hooks install
+# One-time setup (installs hooks + MCP server)
+repowire setup --dev  # use --dev for local development
+
+# Start daemon
+repowire daemon start
+
+# Start Claude in tmux windows - peers auto-register via SessionStart hook
+tmux new-window -n alice
+cd ~/projects/frontend && claude
+
+tmux new-window -n bob
+cd ~/projects/backend && claude
 ```
 
-### 2. Register your Claude sessions
-
-Start Claude Code in tmux sessions:
-```bash
-tmux new -s frontend
-cd ~/app/frontend && claude
-
-# In another terminal
-tmux new -s backend
-cd ~/app/backend && claude
+That's it. Alice and Bob can now talk:
+```
+# In Alice's Claude session:
+"Ask bob what API endpoints they have"
 ```
 
-Register them as peers:
-```bash
-repowire peer register frontend --tmux-session frontend --path ~/app/frontend
-repowire peer register backend --tmux-session backend --path ~/app/backend
+## How It Works
+
+```
+┌─────────────┐                        ┌─────────────┐
+│   Alice     │  ask_peer("bob", ...)  │    Bob      │
+│  (claude)   │ ───────────────────►   │  (claude)   │
+│             │                        │             │
+│             │  ◄─────────────────    │             │
+│             │   Stop hook captures   │             │
+└─────────────┘   response & returns   └─────────────┘
+        │                                     │
+        └──────────┐           ┌──────────────┘
+                   ▼           ▼
+              ┌─────────────────────┐
+              │      Daemon         │
+              │  /tmp/repowire.sock │
+              │                     │
+              │  - routes queries   │
+              │  - tracks pending   │
+              │  - cleans stale     │
+              └─────────────────────┘
 ```
 
-### 3. Add MCP to Claude Code
-
-Edit `~/.claude/settings.json`:
-```json
-{
-  "mcpServers": {
-    "repowire": {
-      "command": "repowire",
-      "args": ["mcp"]
-    }
-  }
-}
-```
-
-### 4. Use in Claude
-
-In your frontend Claude session:
-```
-Ask the backend peer what the API schema is for users
-```
-
-Claude will use the `ask_peer` tool to send a query to the backend session and return the response.
+1. **SessionStart hook** registers peer (name = folder name, e.g., `frontend`)
+2. **ask_peer** sends query to daemon → daemon injects into target's tmux pane
+3. **Target Claude** responds naturally
+4. **Stop hook** fires at end of turn, captures response from transcript
+5. **Response** routes back to caller via daemon
 
 ## MCP Tools
 
@@ -77,9 +60,10 @@ Claude will use the `ask_peer` tool to send a query to the backend session and r
 |------|-------------|
 | `list_peers()` | List all registered peers and their status |
 | `ask_peer(peer_name, query)` | Ask a peer a question, wait for response |
-| `notify_peer(peer_name, message)` | Send notification (fire-and-forget) |
-| `broadcast(message)` | Send message to all peers |
-| `register_peer(name, tmux_session, path)` | Register a new peer |
+| `notify_peer(peer_name, message)` | Proactively share info (don't use for responses) |
+| `broadcast(message)` | Send message to all peers (announcements only) |
+
+Note: Peers auto-register via SessionStart hook. Your response to `ask_peer` queries is captured automatically - don't use `notify_peer` to respond.
 
 ## CLI Commands
 
@@ -145,25 +129,36 @@ relay:
   url: "wss://relay.repowire.io"
   api_key: null
 
+# Peers auto-populate via SessionStart hook
 peers:
   frontend:
-    tmux_session: "frontend"
+    name: frontend
+    tmux_session: "0:frontend"
     path: "/Users/you/app/frontend"
+    session_id: "abc123..."  # set by hook
   backend:
-    tmux_session: "backend"
+    name: backend
+    tmux_session: "0:backend"
     path: "/Users/you/app/backend"
+    session_id: "def456..."
 
 daemon:
   auto_reconnect: true
   heartbeat_interval: 30
 ```
 
-## How It Works
+## Testing the Flow
 
-1. **Local mesh**: Claude sessions in tmux communicate directly via libtmux
-2. **Hook integration**: Claude Code's Stop hook notifies Repowire when responses complete
-3. **Relay server**: For multi-machine setups, a WebSocket relay routes messages
-4. **MCP tools**: Claude accesses the mesh via MCP tools
+Use tmux MCP to set up test peers:
+
+1. Start daemon: `repowire daemon start &`
+2. Create windows for alice and bob via `tmux-mcp create-window`
+3. In each window, run: `cd ~/development/projects/<some-project> && claude`
+4. Verify with `repowire peer list` - peers show as folder names (e.g., `a2a-chat`)
+5. In alice's session: "Ask a2a-chat what this project does"
+6. Clean up: kill the tmux windows via `tmux-mcp kill-window`
+
+Note: Peer name = folder name, not tmux window name.
 
 ## Requirements
 

@@ -163,31 +163,45 @@ class TmuxSessionManager:
                 except Exception:
                     pass
 
-    def _get_peer_status(self, tmux_session: str) -> PeerStatus:
+    def _parse_tmux_target(self, tmux_target: str) -> tuple[str, str | None]:
+        """Parse 'session:window' or 'session' format."""
+        if ":" in tmux_target:
+            session, window = tmux_target.split(":", 1)
+            return session, window
+        return tmux_target, None
+
+    def _get_peer_status(self, tmux_target: str) -> PeerStatus:
         try:
-            session = self.server.sessions.get(session_name=tmux_session)
+            session_name, window_name = self._parse_tmux_target(tmux_target)
+            session = self.server.sessions.get(session_name=session_name)
             if session is None:
                 return PeerStatus.OFFLINE
+            if window_name:
+                window = session.windows.get(window_name=window_name)
+                if window is None:
+                    return PeerStatus.OFFLINE
             return PeerStatus.ONLINE
         except Exception:
             return PeerStatus.OFFLINE
 
-    def _get_peer_pane(self, tmux_session: str) -> libtmux.Pane | None:
+    def _get_peer_pane(self, tmux_target: str) -> libtmux.Pane | None:
         try:
-            session = self.server.sessions.get(session_name=tmux_session)
+            session_name, window_name = self._parse_tmux_target(tmux_target)
+            session = self.server.sessions.get(session_name=session_name)
             if session is None:
                 return None
+            if window_name:
+                window = session.windows.get(window_name=window_name)
+                if window is None:
+                    return None
+                return window.active_pane
             return session.active_pane
         except Exception:
             return None
 
-    def _get_claude_session_id(self, tmux_session: str) -> str | None:
+    def _get_claude_session_id(self, tmux_target: str) -> str | None:
         try:
-            session = self.server.sessions.get(session_name=tmux_session)
-            if session is None:
-                return None
-
-            pane = session.active_pane
+            pane = self._get_peer_pane(tmux_target)
             if pane is None:
                 return None
 

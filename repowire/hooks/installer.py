@@ -1,20 +1,9 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
-HOOKS_DIR = Path.home() / ".repowire" / "hooks"
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
-STOP_HANDLER_NAME = "stop_handler.py"
-
-
-def _get_stop_handler_source() -> Path:
-    return Path(__file__).parent / STOP_HANDLER_NAME
-
-
-def _get_stop_handler_dest() -> Path:
-    return HOOKS_DIR / STOP_HANDLER_NAME
 
 
 def _load_claude_settings() -> dict:
@@ -33,30 +22,34 @@ def _save_claude_settings(settings: dict) -> None:
         json.dump(settings, f, indent=2)
 
 
-def install_hooks() -> bool:
-    HOOKS_DIR.mkdir(parents=True, exist_ok=True)
+def _make_hook_config(command: str) -> dict:
+    return {
+        "hooks": [
+            {
+                "type": "command",
+                "command": command,
+            }
+        ]
+    }
 
-    source = _get_stop_handler_source()
-    dest = _get_stop_handler_dest()
-    shutil.copy2(source, dest)
-    dest.chmod(0o755)
 
+def install_hooks(dev: bool = False) -> bool:
     pending_dir = Path.home() / ".repowire" / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
+
+    if dev:
+        project_dir = Path(__file__).parent.parent.parent
+        base_cmd = f"uvx --from {project_dir} repowire"
+    else:
+        base_cmd = "uvx repowire"
 
     settings = _load_claude_settings()
     if "hooks" not in settings:
         settings["hooks"] = {}
 
-    hook_config = {
-        "hooks": [
-            {
-                "type": "command",
-                "command": f"python3 {dest}",
-            }
-        ]
-    }
-    settings["hooks"]["Stop"] = [hook_config]
+    settings["hooks"]["Stop"] = [_make_hook_config(f"{base_cmd} hook stop")]
+    settings["hooks"]["SessionStart"] = [_make_hook_config(f"{base_cmd} hook session")]
+    settings["hooks"]["SessionEnd"] = [_make_hook_config(f"{base_cmd} hook session")]
 
     _save_claude_settings(settings)
     return True
@@ -68,58 +61,23 @@ def uninstall_hooks() -> bool:
     if "hooks" not in settings:
         return True
 
-    dest = _get_stop_handler_dest()
-    hook_command = f"python3 {dest}"
+    for event in ["Stop", "SessionStart", "SessionEnd"]:
+        if event in settings["hooks"]:
+            del settings["hooks"][event]
 
-    if "Stop" in settings["hooks"]:
-        hooks = settings["hooks"]["Stop"]
-        if isinstance(hooks, list):
-            settings["hooks"]["Stop"] = [
-                h
-                for h in hooks
-                if not (
-                    isinstance(h, dict)
-                    and any(
-                        hh.get("command") == hook_command
-                        for hh in h.get("hooks", [])
-                        if isinstance(hh, dict)
-                    )
-                )
-            ]
-            if not settings["hooks"]["Stop"]:
-                del settings["hooks"]["Stop"]
-
-    if settings.get("hooks") and not settings["hooks"]:
+    if not settings["hooks"]:
         del settings["hooks"]
 
     _save_claude_settings(settings)
-
-    if dest.exists():
-        dest.unlink()
-
     return True
 
 
 def check_hooks_installed() -> bool:
-    dest = _get_stop_handler_dest()
-    if not dest.exists():
-        return False
-
     settings = _load_claude_settings()
-    if "hooks" not in settings or "Stop" not in settings["hooks"]:
+    if "hooks" not in settings:
         return False
 
-    hook_command = f"python3 {dest}"
-    hooks = settings["hooks"]["Stop"]
-
-    if not isinstance(hooks, list):
-        return False
-
-    for hook_config in hooks:
-        if not isinstance(hook_config, dict):
-            continue
-        for h in hook_config.get("hooks", []):
-            if isinstance(h, dict) and h.get("command") == hook_command:
-                return True
-
-    return False
+    return all(
+        event in settings["hooks"]
+        for event in ["Stop", "SessionStart", "SessionEnd"]
+    )

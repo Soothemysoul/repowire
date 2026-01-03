@@ -21,6 +21,32 @@ def main() -> None:
 
 
 @main.command()
+@click.option("--dev", is_flag=True, help="Use dev mode (uv run from current directory)")
+def setup(dev: bool) -> None:
+    """One-time setup: install hooks and add MCP server to Claude."""
+    import subprocess
+
+    from repowire.hooks.installer import install_hooks
+
+    install_hooks(dev=dev)
+    console.print("[green]✓[/] Hooks installed")
+
+    # Remove existing repowire MCP server if present
+    subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)
+
+    if dev:
+        project_dir = str(Path(__file__).parent.parent)
+        cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "uv", "run", "--directory", project_dir, "repowire", "mcp"]
+    else:
+        cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "uvx", "repowire", "mcp"]
+
+    subprocess.run(cmd, check=True)
+    console.print("[green]✓[/] MCP server added to Claude")
+    console.print("")
+    console.print("[green]Setup complete![/] Restart Claude Code to use Repowire.")
+
+
+@main.command()
 def mcp() -> None:
     """Start the MCP server (for Claude Code integration)."""
     from repowire.mcp.server import run_mcp_server
@@ -67,7 +93,7 @@ def peer_list() -> None:
 
 @peer.command(name="register")
 @click.argument("name")
-@click.option("--tmux-session", "-t", required=True, help="Tmux session name")
+@click.option("--tmux-session", "-t", required=True, help="Tmux session:window (e.g., '0:mywindow')")
 @click.option("--path", "-p", help="Working directory (defaults to current)")
 def peer_register(name: str, tmux_session: str, path: str | None) -> None:
     """Register a peer for mesh communication."""
@@ -76,7 +102,11 @@ def peer_register(name: str, tmux_session: str, path: str | None) -> None:
     config = load_config()
     actual_path = path or str(Path.cwd())
 
-    config.add_peer(name, tmux_session, actual_path)
+    config.add_peer(
+        name=name,
+        path=actual_path,
+        tmux_session=tmux_session,
+    )
 
     console.print(f"[green]Registered peer '{name}'[/]")
     console.print(f"  tmux session: {tmux_session}")
@@ -103,15 +133,16 @@ def peer_unregister(name: str) -> None:
 @click.option("--timeout", "-t", default=120, help="Timeout in seconds")
 def peer_ask(name: str, query: str, timeout: int) -> None:
     """Ask a peer a question (CLI testing utility)."""
-    from repowire.session.manager import TmuxSessionManager
+    from repowire.daemon.client import DaemonClient
 
     async def do_ask() -> str:
-        manager = TmuxSessionManager()
-        await manager.start()
+        client = DaemonClient()
+        if not await client.connect(auto_start=True):
+            raise RuntimeError("Cannot connect to daemon")
         try:
-            return await manager.send_query(name, query, timeout=float(timeout))
+            return await client.query(name, query, timeout=float(timeout))
         finally:
-            await manager.stop()
+            await client.disconnect()
 
     try:
         response = asyncio.run(do_ask())
@@ -119,6 +150,8 @@ def peer_ask(name: str, query: str, timeout: int) -> None:
     except TimeoutError:
         console.print(f"[red]Timeout: No response from {name}[/]")
     except ValueError as e:
+        console.print(f"[red]Error: {e}[/]")
+    except RuntimeError as e:
         console.print(f"[red]Error: {e}[/]")
 
 
@@ -172,24 +205,66 @@ def daemon() -> None:
 
 
 @daemon.command(name="start")
-@click.option("--relay-url", help="Relay server URL")
-@click.option("--api-key", help="API key for relay authentication")
-def daemon_start(relay_url: str | None, api_key: str | None) -> None:
+@click.option("--foreground", "-f", is_flag=True, help="Run in foreground (don't daemonize)")
+def daemon_start(foreground: bool) -> None:
     """Start the Repowire daemon."""
-    from repowire.client.daemon import run_daemon
-    from repowire.config.models import load_config
+    import os
+    import subprocess
+    import sys
 
-    config = load_config()
+    from repowire.daemon import is_daemon_running
 
-    if relay_url:
-        config.relay.url = relay_url
-        config.relay.enabled = True
-    if api_key:
-        config.relay.api_key = api_key
-        config.relay.enabled = True
+    if is_daemon_running():
+        console.print("[yellow]Daemon is already running.[/]")
+        return
 
-    console.print("[cyan]Starting Repowire daemon...[/]")
-    asyncio.run(run_daemon(config))
+    if foreground:
+        from repowire.daemon import run_daemon
+
+        console.print("[cyan]Starting Repowire daemon (foreground)...[/]")
+        asyncio.run(run_daemon())
+    else:
+        project_dir = Path(__file__).parent.parent
+        subprocess.Popen(
+            [sys.executable, "-m", "repowire.daemon.server"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=str(project_dir),
+        )
+        console.print("[green]Daemon started in background.[/]")
+
+
+@daemon.command(name="stop")
+def daemon_stop() -> None:
+    """Stop the Repowire daemon."""
+    import os
+    import signal
+
+    from repowire.daemon import get_daemon_pid
+
+    pid = get_daemon_pid()
+    if not pid:
+        console.print("[yellow]Daemon is not running.[/]")
+        return
+
+    try:
+        os.kill(pid, signal.SIGTERM)
+        console.print("[green]Daemon stopped.[/]")
+    except OSError as e:
+        console.print(f"[red]Failed to stop daemon: {e}[/]")
+
+
+@daemon.command(name="status")
+def daemon_status() -> None:
+    """Check if the daemon is running."""
+    from repowire.daemon import get_daemon_pid, is_daemon_running
+
+    if is_daemon_running():
+        pid = get_daemon_pid()
+        console.print(f"[green]Daemon is running (PID: {pid})[/]")
+    else:
+        console.print("[yellow]Daemon is not running.[/]")
 
 
 @main.group()
@@ -253,6 +328,32 @@ def config_path() -> None:
     from repowire.config.models import Config
 
     console.print(str(Config.get_config_path()))
+
+
+@main.group(hidden=True)
+def hook() -> None:
+    """Internal hook handlers (called by Claude Code)."""
+    pass
+
+
+@hook.command(name="stop")
+def hook_stop() -> None:
+    """Handle Stop hook - capture response for pending queries."""
+    import sys
+
+    from repowire.hooks.stop_handler import main as stop_main
+
+    sys.exit(stop_main())
+
+
+@hook.command(name="session")
+def hook_session() -> None:
+    """Handle SessionStart/SessionEnd hooks - auto-register/unregister peers."""
+    import sys
+
+    from repowire.hooks.session_handler import main as session_main
+
+    sys.exit(session_main())
 
 
 if __name__ == "__main__":
