@@ -1,11 +1,16 @@
 """Configuration models for Repowire."""
+
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, Field
+
+# Backend type for pluggable backends
+BackendType = Literal["claudemux", "opencode"]
 
 
 class RelayConfig(BaseModel):
@@ -16,18 +21,37 @@ class RelayConfig(BaseModel):
     api_key: str | None = Field(None, description="API key for authentication")
 
 
+class OpencodeConfig(BaseModel):
+    """OpenCode backend settings."""
+
+    default_url: str = Field(
+        default="http://localhost:4096", description="Default OpenCode server URL"
+    )
+
+
 class PeerConfig(BaseModel):
     """Configuration for a single peer."""
 
     name: str = Field(..., description="Human-readable peer name (folder name)")
+    path: str | None = Field(None, description="Working directory path")
+
+    # claudemux backend fields
     tmux_session: str | None = Field(None, description="Tmux session:window")
-    path: str = Field(..., description="Working directory path")
-    session_id: str | None = Field(None, description="Claude session ID (set by hooks)")
+
+    # opencode backend fields
+    opencode_url: str | None = Field(None, description="OpenCode server URL for this peer")
+    session_id: str | None = Field(None, description="Session ID (Claude or OpenCode)")
 
 
 class DaemonConfig(BaseModel):
     """Configuration for the daemon process."""
 
+    # HTTP daemon settings
+    host: str = Field(default="127.0.0.1", description="HTTP daemon host")
+    port: int = Field(default=8377, description="HTTP daemon port")
+    backend: BackendType = Field(default="claudemux", description="Backend type to use")
+
+    # Legacy/additional settings
     auto_reconnect: bool = Field(default=True, description="Auto-reconnect on disconnect")
     heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")
     socket_path: str = Field(default="/tmp/repowire.sock", description="Unix socket path for IPC")
@@ -43,9 +67,10 @@ class LoggingConfig(BaseModel):
 class Config(BaseModel):
     """Main Repowire configuration."""
 
-    relay: RelayConfig = Field(default_factory=RelayConfig)
-    peers: dict[str, PeerConfig] = Field(default_factory=dict)  # keyed by peer name
     daemon: DaemonConfig = Field(default_factory=DaemonConfig)
+    relay: RelayConfig = Field(default_factory=RelayConfig)
+    opencode: OpencodeConfig = Field(default_factory=OpencodeConfig)
+    peers: dict[str, PeerConfig] = Field(default_factory=dict)  # keyed by peer name
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
     @classmethod
@@ -72,17 +97,19 @@ class Config(BaseModel):
     def add_peer(
         self,
         name: str,
-        path: str,
+        path: str | None = None,
         tmux_session: str | None = None,
         session_id: str | None = None,
+        opencode_url: str | None = None,
     ) -> None:
         """Add or update a peer by name."""
         existing = self.peers.get(name)
         self.peers[name] = PeerConfig(
             name=name,
+            path=path or (existing.path if existing else None),
             tmux_session=tmux_session or (existing.tmux_session if existing else None),
-            path=path,
             session_id=session_id or (existing.session_id if existing else None),
+            opencode_url=opencode_url or (existing.opencode_url if existing else None),
         )
         self.save()
 
