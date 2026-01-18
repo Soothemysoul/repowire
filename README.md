@@ -8,11 +8,20 @@
   <p>Mesh network for AI coding agents (Claude Code, OpenCode) - enables sessions to communicate.</p>
 </div>
 
+## Installation
+
+```bash
+# Install from PyPI
+uv tool install "repowire[claudemux]"
+# or
+pip install "repowire[claudemux]"
+```
+
 ## Quick Start
 
 ```bash
 # One-time setup (installs hooks + MCP server)
-repowire setup --dev  # use --dev for local development
+repowire setup
 
 # Start daemon
 repowire serve
