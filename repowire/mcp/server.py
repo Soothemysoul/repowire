@@ -1,39 +1,32 @@
-"""MCP server - thin client that delegates to daemon."""
+"""MCP server - thin HTTP client that delegates to daemon."""
+
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
+import httpx
 from mcp.server.fastmcp import FastMCP
 
-from repowire.daemon.client import DaemonClient
-
-_client: DaemonClient | None = None
-_my_peer_name: str | None = None
+DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 
 
 def _detect_my_peer_name() -> str:
-    """Detect current peer name from cwd folder name (matches session_handler)."""
-    global _my_peer_name
-    if _my_peer_name:
-        return _my_peer_name
-
-    # Use folder name as peer name (same as session_handler)
-    _my_peer_name = Path.cwd().name
-    return _my_peer_name
+    """Detect current peer name from cwd folder name."""
+    return Path.cwd().name
 
 
-async def get_client() -> DaemonClient:
-    """Get the daemon client, creating and connecting if needed."""
-    global _client
-    if _client is None:
-        _client = DaemonClient(peer_name=_detect_my_peer_name())
-
-    if not _client._connected:
-        if not await _client.connect(auto_start=True):
-            raise RuntimeError("Cannot connect to repowire daemon")
-
-    return _client
+async def daemon_request(method: str, path: str, body: dict | None = None) -> dict:
+    """Make an HTTP request to the daemon."""
+    async with httpx.AsyncClient(timeout=300.0) as client:
+        url = f"{DAEMON_URL}{path}"
+        if method == "GET":
+            resp = await client.get(url)
+        else:
+            resp = await client.post(url, json=body or {})
+        resp.raise_for_status()
+        return resp.json()
 
 
 def create_mcp_server() -> FastMCP:
@@ -41,13 +34,13 @@ def create_mcp_server() -> FastMCP:
     mcp = FastMCP("repowire")
 
     @mcp.tool()
-    async def list_peers() -> list[dict]:
+    async def list_peers() -> str:
         """List all registered peers in the mesh.
 
         Returns a list of peers with their name, path, machine, and status.
         """
-        client = await get_client()
-        return await client.list_peers()
+        result = await daemon_request("GET", "/peers")
+        return json.dumps(result.get("peers", []), indent=2)
 
     @mcp.tool()
     async def ask_peer(peer_name: str, query: str) -> str:
@@ -60,8 +53,19 @@ def create_mcp_server() -> FastMCP:
         Returns:
             The peer's response text
         """
-        client = await get_client()
-        return await client.query(peer_name, query)
+        my_name = _detect_my_peer_name()
+        result = await daemon_request(
+            "POST",
+            "/query",
+            {
+                "from_peer": my_name,
+                "to_peer": peer_name,
+                "text": query,
+            },
+        )
+        if result.get("error"):
+            raise Exception(result["error"])
+        return result.get("text", "")
 
     @mcp.tool()
     async def notify_peer(peer_name: str, message: str) -> str:
@@ -83,8 +87,16 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
-        client = await get_client()
-        await client.notify(peer_name, message)
+        my_name = _detect_my_peer_name()
+        await daemon_request(
+            "POST",
+            "/notify",
+            {
+                "from_peer": my_name,
+                "to_peer": peer_name,
+                "text": message,
+            },
+        )
         return f"Notification sent to {peer_name}"
 
     @mcp.tool()
@@ -100,8 +112,16 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
-        client = await get_client()
-        sent_to = await client.broadcast(message)
+        my_name = _detect_my_peer_name()
+        result = await daemon_request(
+            "POST",
+            "/broadcast",
+            {
+                "from_peer": my_name,
+                "text": message,
+            },
+        )
+        sent_to = result.get("sent_to", [])
         return f"Broadcast sent to: {', '.join(sent_to) if sent_to else 'no peers online'}"
 
     return mcp
@@ -110,8 +130,4 @@ def create_mcp_server() -> FastMCP:
 async def run_mcp_server() -> None:
     """Run the MCP server."""
     mcp = create_mcp_server()
-    try:
-        await mcp.run_stdio_async()
-    finally:
-        if _client is not None:
-            await _client.disconnect()
+    await mcp.run_stdio_async()
