@@ -1,0 +1,6 @@
+apiVersion: v2
+name: repowire-relay
+description: WebSocket relay server for Repowire mesh communication
+type: application
+version: 0.1.0
+appVersion: "0.1.2"

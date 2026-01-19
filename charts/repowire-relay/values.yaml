@@ -1,0 +1,46 @@
+replicaCount: 1
+
+image:
+  repository: us-docker.pkg.dev/baldmaninc/gcr.io/repowire-relay
+  tag: latest
+  pullPolicy: Always
+
+service:
+  port: 80
+  targetPort: 8000
+
+relay:
+  host: "0.0.0.0"
+  port: 8000
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "500m"
+
+# Use spot instances for cost savings
+nodeSelector:
+  cloud.google.com/gke-spot: "true"
+
+tolerations:
+  - effect: NoSchedule
+    key: cloud.google.com/gke-spot
+    operator: Equal
+    value: "true"
+
+# HTTPRoute configuration
+httpRoute:
+  enabled: true
+  hostname: relay.repowire.io
+  gatewayNamespace: clusterkit
+  gatewayName: clusterkit-gateway
+  annotations:
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+
+# Secret for JWT signing
+secrets:
+  jwtSecretName: repowire-relay-secrets
+  jwtSecretKey: jwt-secret
