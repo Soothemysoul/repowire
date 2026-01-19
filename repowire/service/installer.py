@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
@@ -73,6 +74,9 @@ def _generate_launchd_plist(backend: str | None = None) -> str:
         program_args += f"        <string>--backend</string>\n"
         program_args += f"        <string>{backend}</string>\n"
 
+    # Get current PATH so launchd can find tmux and other tools
+    current_path = os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
+
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -83,6 +87,11 @@ def _generate_launchd_plist(backend: str | None = None) -> str:
     <array>
 {program_args.rstrip()}
     </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>{current_path}</string>
+    </dict>
     <key>RunAtLoad</key>
     <true/>
     <key>KeepAlive</key>
@@ -197,6 +206,7 @@ def _generate_systemd_unit(backend: str | None = None) -> str:
     """Generate the systemd unit file content."""
     repowire_exec = _get_repowire_executable()
     log_path = _get_log_path()
+    current_path = os.environ.get("PATH", "/usr/bin:/bin:/usr/sbin:/sbin")
 
     exec_start = f"{repowire_exec} serve"
     if backend:
@@ -209,6 +219,7 @@ After=network.target
 [Service]
 Type=simple
 ExecStart={exec_start}
+Environment=PATH={current_path}
 Restart=always
 RestartSec=5
 StandardOutput=append:{log_path}
