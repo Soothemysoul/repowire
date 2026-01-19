@@ -8,8 +8,7 @@
   <p>Mesh network for AI coding agents - enables Claude Code and OpenCode sessions to communicate.</p>
 </div>
 
-<details>
-<summary><h2>💡 Why I built this</h2></summary>
+## 💡 Why I built this
 
 I work on projects that span multiple repos. Microservices, infra + app code, frontend + backend. You know how it goes. And I've been using Claude Code a lot. It's great, but it works in isolation. One repo, one session.
 
@@ -41,8 +40,6 @@ Those approaches are **async**. They persist context for later use. Repowire is 
 The Claude session in your `backend` repo can literally ask the one in `infra` a question and get a real answer based on the actual code, not some outdated doc you forgot to update.
 
 They're complementary. Use memory banks for persistent project knowledge. Use Repowire when you need a real answer from another repo's current state.
-
-</details>
 
 ## Installation
 
