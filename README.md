@@ -5,10 +5,12 @@
   </picture>
 
   <h1>Repowire</h1>
-  <p>Mesh network for AI coding agents (Claude Code, OpenCode) - enables sessions to communicate.</p>
+  <p>Mesh network for AI coding agents - enables Claude Code and OpenCode sessions to communicate.</p>
 </div>
 
 ## Installation
+
+**Requirements:** macOS or Linux, Python 3.10+, tmux (for claudemux backend)
 
 ```bash
 # Install from PyPI
@@ -20,144 +22,190 @@ pip install "repowire[claudemux]"
 ## Quick Start
 
 ```bash
-# One-time setup (installs hooks, MCP server, and daemon service)
+# One-time setup - installs hooks, MCP server, and daemon service
 repowire setup
 
-# Check status
+# Verify everything is running
 repowire status
+```
 
-# Start Claude in tmux windows - peers auto-register via SessionStart hook
-tmux new-window -n alice
+Now start two Claude sessions in tmux:
+
+```bash
+# Terminal 1
+tmux new-session -s dev -n frontend
 cd ~/projects/frontend && claude
 
-tmux new-window -n bob
+# Terminal 2 (or tmux split)
+tmux new-window -t dev -n backend
 cd ~/projects/backend && claude
 ```
 
-The daemon runs as a system service (launchd on macOS, systemd on Linux) and starts automatically on login.
+The sessions auto-discover each other. In frontend's Claude:
 
-Alice and Bob can now talk:
 ```
-# In Alice's Claude session:
-"Ask bob what API endpoints they have"
+"Ask backend what API endpoints they expose"
 ```
+
+Claude uses the `ask_peer` tool, backend responds, and you get the answer back.
+
+**What just happened?** See [How It Works: claudemux](#claudemux-default) for details.
 
 ## How It Works
 
-```
-┌─────────────┐                        ┌─────────────┐
-│   Alice     │  ask_peer("bob", ...)  │    Bob      │
-│  (claude)   │ ───────────────────►   │  (claude)   │
-│             │                        │             │
-│             │  ◄─────────────────    │             │
-│             │   Stop hook captures   │             │
-└─────────────┘   response & returns   └─────────────┘
-        │                                     │
-        └──────────┐           ┌──────────────┘
-                   ▼           ▼
-              ┌─────────────────────┐
-              │   HTTP Daemon       │
-              │  127.0.0.1:8377     │
-              │                     │
-              │  - routes queries   │
-              │  - tracks pending   │
-              │  - receives hooks   │
-              └─────────────────────┘
-```
-
-1. **SessionStart hook** registers peer with metadata (name = folder name, git branch)
-2. **SessionStart hook** injects peer context into Claude (lists available peers)
-3. **ask_peer** sends query to daemon, daemon injects into target's tmux pane
-4. **Target Claude** responds naturally
-5. **Stop hook** fires at end of turn, captures response from transcript
-6. **Response** routes back to caller via daemon
-
-## Backends
-
-Repowire supports two backends for different AI coding environments:
-
 ### claudemux (default)
-For **Claude Code** sessions running in tmux.
-- Peers auto-register via SessionStart hook
-- Responses captured via Stop hook reading transcript
-- Requires: tmux, Claude Code with hooks support
 
-```bash
-repowire setup --backend claudemux
-repowire serve --backend claudemux
+For Claude Code sessions running in tmux. This is the tested, production-ready backend.
+
+#### What's Installed
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| **Daemon** | System service (launchd/systemd) | Routes messages between peers, runs on `127.0.0.1:8377` |
+| **Hooks** | `~/.claude/settings.json` | SessionStart (register peer), SessionEnd (cleanup), Stop (capture responses) |
+| **MCP Server** | Registered with Claude | Provides `ask_peer`, `list_peers`, `notify_peer`, `broadcast` tools |
+| **Config** | `~/.repowire/config.yaml` | Peer registry and settings |
+| **Logs** | `~/.repowire/daemon.log` | Daemon output |
+
+<details>
+<summary><strong>Architecture</strong></summary>
+
+```
+┌─────────────┐                           ┌─────────────┐
+│  frontend   │    ask_peer("backend")    │   backend   │
+│   Claude    │ ─────────────────────────►│   Claude    │
+│             │                           │             │
+│             │ ◄─────────────────────────│             │
+│             │      response text        │             │
+└─────────────┘                           └─────────────┘
+       │                                         │
+       │ MCP tool call                           │ Stop hook captures
+       ▼                                         ▼ response from transcript
+┌─────────────────────────────────────────────────────┐
+│                      Daemon                          │
+│                   127.0.0.1:8377                     │
+│                                                     │
+│  1. Receives query from frontend                    │
+│  2. Looks up backend's tmux session                 │
+│  3. Injects query into backend's pane (libtmux)    │
+│  4. Waits for Stop hook to send response            │
+│  5. Returns response to frontend                    │
+└─────────────────────────────────────────────────────┘
 ```
 
-### opencode
-For **OpenCode** sessions using the opencode-ai SDK.
-- Responses returned directly from SDK (no hooks needed)
-- Requires: OpenCode server running
+**Why tmux?** Claude Code runs in a terminal. Tmux gives us programmatic access to inject queries (via `send_keys`) into another session's pane.
 
-```bash
-repowire setup --backend opencode
-repowire serve --backend opencode
+**Why hooks?** Claude Code doesn't have an API. Hooks are the only extension point:
+- **SessionStart**: Registers peer with daemon, injects list of available peers into Claude's context
+- **SessionEnd**: Marks peer offline, cancels pending queries immediately
+- **Stop**: Reads transcript, extracts Claude's response, sends to daemon
+
+**Why a central daemon?** Single source of truth for peer registry. Runs as a system service so it survives reboots and is always available when Claude sessions start.
+
+</details>
+
+---
+
+### opencode (experimental)
+
+> ⚠️ **Untested** - Architecture exists but not battle-tested.
+
+For OpenCode sessions using the opencode-ai SDK.
+
+#### What's Installed
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| **Daemon** | System service | Routes messages, `127.0.0.1:8377` |
+| **Plugin** | OpenCode plugins directory | Provides peer tools |
+| **Config** | `~/.repowire/config.yaml` | Peer registry |
+
+<details>
+<summary><strong>Architecture</strong></summary>
+
+```
+┌─────────────┐                           ┌─────────────┐
+│   Peer A    │    ask_peer("B")          │   Peer B    │
+│             │ ─────────────────────────►│  (OpenCode) │
+│             │                           │             │
+│             │ ◄─────────────────────────│             │
+│             │      response             │             │
+└─────────────┘                           └─────────────┘
+       │                                         ▲
+       │                                         │
+       ▼                                         │
+┌─────────────────────────────────────────────────────┐
+│                      Daemon                          │
+│                                                     │
+│  • Calls OpenCode SDK directly                      │
+│  • SDK returns response (no hooks needed)           │
+└─────────────────────────────────────────────────────┘
 ```
 
-Set default backend in config: `daemon.backend: "claudemux"` or `"opencode"`
+**Why simpler?** OpenCode has an SDK with direct API access. No need for hooks or tmux - we can send messages and get responses programmatically.
 
-## MCP Tools
+</details>
 
-| Tool | Description |
-|------|-------------|
-| `list_peers()` | List all registered peers and their status |
-| `ask_peer(peer_name, query)` | Ask a peer a question, wait for response |
-| `notify_peer(peer_name, message)` | Proactively share info (don't use for responses) |
-| `broadcast(message)` | Send message to all peers (announcements only) |
+To use: `repowire setup --backend opencode`
 
-Note: Peers auto-register via SessionStart hook. Your response to `ask_peer` queries is captured automatically - don't use `notify_peer` to respond.
-
-## CLI Commands
+## CLI Reference
 
 ```bash
 # Main commands
-repowire setup                    # Install everything (hooks, MCP, daemon service)
-repowire setup --no-service       # Skip daemon service (use 'serve' manually)
-repowire status                   # Show installation and daemon status
+repowire setup                    # Install hooks, MCP server, daemon service
+repowire setup --no-service       # Skip daemon service (run manually with 'serve')
+repowire status                   # Show what's installed and running
 repowire uninstall                # Remove all components
 
-# Daemon
-repowire serve                    # Start daemon manually (foreground)
-repowire serve --backend opencode # Start with specific backend
+# Manual daemon control
+repowire serve                    # Run daemon in foreground
 
-# Peer management
-repowire peer list                # List peers and status
+# Peer commands
+repowire peer list                # List peers and their status
 repowire peer ask NAME "query"    # Test: ask a peer a question
 ```
 
-Advanced commands are available but hidden from help: `claudemux`, `opencode`, `service`, `config`, `relay`.
-
-## Multi-Machine Setup
-
-For Claude sessions on different machines, use the relay server:
-
-### 1. Deploy relay (or use repowire.io)
+<details>
+<summary>Advanced commands (hidden from <code>--help</code>)</summary>
 
 ```bash
-# Self-hosted
+# Backend-specific
+repowire claudemux status         # Check hooks installation
+repowire opencode status          # Check plugin installation
+
+# Service management
+repowire service install          # Install daemon as system service
+repowire service uninstall        # Remove system service
+repowire service status           # Check service status
+
+# Config
+repowire config show              # Show current configuration
+repowire config path              # Show config file path
+```
+
+</details>
+
+## Advanced
+
+### Multi-Machine Relay
+
+> ⚠️ **Experimental** - Not production ready. `relay.repowire.io` is not yet available.
+
+For Claude sessions on different machines:
+
+```bash
+# Self-host a relay server
 repowire relay start --port 8000
-
-# Or use hosted relay at relay.repowire.io
-```
-
-### 2. Generate API key
-
-```bash
 repowire relay generate-key --user-id myuser
-# Save the generated key
+
+# On each machine, configure relay in ~/.repowire/config.yaml:
+# relay:
+#   enabled: true
+#   url: "wss://your-relay-server:8000"
+#   api_key: "your-key"
 ```
 
-### 3. Start daemon on each machine
-
-```bash
-# Configure relay in ~/.repowire/config.yaml, then:
-repowire serve
-```
-
-## Configuration
+### Configuration Reference
 
 Config file: `~/.repowire/config.yaml`
 
@@ -166,8 +214,6 @@ daemon:
   host: "127.0.0.1"
   port: 8377
   backend: "claudemux"  # or "opencode"
-  auto_reconnect: true
-  heartbeat_interval: 30
 
 relay:
   enabled: false
@@ -178,38 +224,11 @@ relay:
 peers:
   frontend:
     name: frontend
-    path: "/Users/you/app/frontend"
-    tmux_session: "0:frontend"    # claudemux backend
-    session_id: "abc123..."       # set by hook
+    path: "/path/to/frontend"
+    tmux_session: "dev:frontend"
     metadata:
-      branch: "feat/new-ui"       # git branch, auto-detected
-  backend:
-    name: backend
-    path: "/Users/you/app/backend"
-    opencode_url: "http://localhost:4096"  # opencode backend
-    session_id: "def456..."
-    metadata:
-      branch: "main"
+      branch: "main"  # auto-detected from git
 ```
-
-## Testing the Flow
-
-1. Run setup: `repowire setup`
-2. Check status: `repowire status` (daemon should be running)
-3. Create tmux windows for test peers
-4. In each window: `cd ~/projects/<some-project> && claude`
-5. Verify peers: `repowire peer list` - shows folder names as peer names
-6. In one session: "Ask <peer-name> what this project does"
-
-Note: Peer name = folder name, not tmux window name.
-
-## Requirements
-
-- macOS or Linux (service mode uses launchd/systemd)
-- Python 3.10+
-- tmux (for claudemux backend)
-- Claude Code with hooks support (for claudemux backend)
-- OpenCode (for opencode backend)
 
 ## License
 
