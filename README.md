@@ -205,6 +205,7 @@ Note: Peer name = folder name, not tmux window name.
 
 ## Requirements
 
+- macOS or Linux (service mode uses launchd/systemd)
 - Python 3.10+
 - tmux (for claudemux backend)
 - Claude Code with hooks support (for claudemux backend)
