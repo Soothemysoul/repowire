@@ -137,6 +137,27 @@ async def delete_peer(
     return OkResponse()
 
 
+class OfflineResponse(BaseModel):
+    """Response for marking peer offline."""
+
+    ok: bool = True
+    cancelled_queries: int = 0
+
+
+@router.post("/peers/{name}/offline", response_model=OfflineResponse)
+async def mark_peer_offline(
+    name: str,
+    _: str | None = Depends(require_auth),
+) -> OfflineResponse:
+    """Mark a peer as offline and cancel pending queries to it.
+
+    Called by SessionEnd hook when a Claude session closes.
+    """
+    peer_manager = get_peer_manager()
+    cancelled = await peer_manager.mark_offline(name)
+    return OfflineResponse(cancelled_queries=cancelled)
+
+
 # Legacy endpoints for backward compatibility
 
 

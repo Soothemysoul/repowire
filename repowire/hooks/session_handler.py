@@ -134,7 +134,16 @@ def main() -> int:
                 }
                 print(json.dumps(output))
 
-    # SessionEnd: no action needed - daemon determines peer status from tmux
+    elif event == "SessionEnd":
+        # Notify daemon we're going offline so pending queries get cancelled
+        try:
+            req = urllib.request.Request(
+                f"{DAEMON_URL}/peers/{peer_name}/offline",
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=2.0)
+        except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+            pass  # Best effort - daemon may not be running
 
     return 0
 

@@ -17,6 +17,7 @@ from repowire.backends.claudemux.installer import (
     install_hooks,
     uninstall_hooks,
 )
+from repowire.protocol.errors import PeerDisconnectedError
 from repowire.protocol.peers import PeerStatus
 
 if TYPE_CHECKING:
@@ -106,6 +107,33 @@ class ClaudemuxBackend(Backend):
             future.set_result(response)
             return True
         return False
+
+    def cancel_queries_to_peer(self, peer_name: str) -> int:
+        """Cancel all pending queries to a peer (called when peer disconnects).
+
+        Args:
+            peer_name: Name of the peer that disconnected
+
+        Returns:
+            Number of queries cancelled
+        """
+        cancelled = 0
+        # Scan pending files to find queries to this peer
+        for pending_file in self._pending_dir.glob("*.json"):
+            try:
+                data = json.loads(pending_file.read_text())
+                if data.get("to_peer") == peer_name:
+                    correlation_id = data.get("correlation_id")
+                    if correlation_id:
+                        future = self._pending_queries.get(correlation_id)
+                        if future and not future.done():
+                            future.set_exception(PeerDisconnectedError(peer_name))
+                            cancelled += 1
+                        self._pending_queries.pop(correlation_id, None)
+                    pending_file.unlink()
+            except (json.JSONDecodeError, OSError):
+                continue
+        return cancelled
 
     def get_peer_status(self, peer: PeerConfig) -> PeerStatus:
         """Check if peer's tmux session is active."""

@@ -109,6 +109,27 @@ class PeerManager:
                 return True
             return False
 
+    async def mark_offline(self, name: str) -> int:
+        """Mark a peer as offline and cancel pending queries to it.
+
+        Args:
+            name: Name of the peer going offline
+
+        Returns:
+            Number of queries cancelled
+        """
+        # Update status
+        async with self._lock:
+            if name in self._peers:
+                self._peers[name].status = PeerStatus.OFFLINE
+
+        # Cancel pending queries to this peer
+        cancelled = 0
+        if hasattr(self._backend, "cancel_queries_to_peer"):
+            cancelled = self._backend.cancel_queries_to_peer(name)
+
+        return cancelled
+
     def _get_peer_config(self, name: str) -> PeerConfig | None:
         """Get peer config by name."""
         self._config = load_config()
