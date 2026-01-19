@@ -9,9 +9,9 @@
 </div>
 
 <details>
-<summary><strong>Why I built this</strong></summary>
+<summary>💡 <strong>Why I built this</strong></summary>
 
-I work on projects that span multiple repos. Microservices, infra + app code, frontend + backend—you know how it goes. And I've been using Claude Code a lot. It's great, but it works in isolation. One repo, one session.
+I work on projects that span multiple repos. Microservices, infra + app code, frontend + backend. You know how it goes. And I've been using Claude Code a lot. It's great, but it works in isolation. One repo, one session.
 
 So what happens when I'm in my `backend` repo and I need to know how the `infra` repo handles deployments? Or when `frontend` needs to understand what API shape `backend` is exposing?
 
@@ -28,17 +28,17 @@ I'm not the first to tackle this. There's some really interesting work out there
 | Approach | How it works | Tradeoff |
 |----------|--------------|----------|
 | [Memory Bank](https://docs.tinyfat.com/guides/memory-bank/) | Structured directories with persistent markdown files. Human-curated context that survives sessions. | Manual maintenance. Context can go stale. |
-| [claude-cognitive](https://github.com/GMaN1911/claude-cognitive) | Pressure-based "hot/warm/cold" memory. Things used often stay hot, unused things fade. | Complexity. Still async—no real-time communication. |
+| [claude-cognitive](https://github.com/GMaN1911/claude-cognitive) | Pressure-based "hot/warm/cold" memory. Things used often stay hot, unused things fade. | Complexity. Still async, no real-time communication. |
 | [claude-mem](https://github.com/thedotmack/claude-mem) | Auto-captures session history, compresses with AI, injects into future sessions. | Token overhead. Compressed context may lose nuance. |
 | [Polyrepo MCP](https://blackdoglabs.io/blog/claude-code-decoded-multi-repo-context) | MCP server that loads context across repos intelligently. | Pre-loaded context, not live queries. |
 
-One dev tracked a [227:1 ratio](https://medium.com/@gman1911.gs/i-built-working-memory-for-claude-code-heres-what-happened-in-4-days-657c60712655)—506M tokens consumed vs 2.2M generated. Most of that was Claude re-reading the same files, re-discovering the same architectural decisions, re-learning things it had already understood in previous sessions.
+One dev tracked a [227:1 ratio](https://medium.com/@gman1911.gs/i-built-working-memory-for-claude-code-heres-what-happened-in-4-days-657c60712655) of 506M tokens consumed vs 2.2M generated. Most of that was Claude re-reading the same files, re-discovering the same architectural decisions, re-learning things it had already understood in previous sessions.
 
 ### Where Repowire fits
 
-Those approaches are **async**—they persist context for later use. Repowire is **sync**—live agents talking to each other about current code.
+Those approaches are **async**. They persist context for later use. Repowire is **sync**. Live agents talking to each other about current code.
 
-The Claude session in your `backend` repo can literally ask the one in `infra` a question—and get a real answer based on the actual code, not some outdated doc you forgot to update.
+The Claude session in your `backend` repo can literally ask the one in `infra` a question and get a real answer based on the actual code, not some outdated doc you forgot to update.
 
 They're complementary. Use memory banks for persistent project knowledge. Use Repowire when you need a real answer from another repo's current state.
 
