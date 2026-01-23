@@ -10,3 +10,12 @@ build/
 .mypy_cache/
 .pytest_cache/
 .repowire/
+ui/
+
+# Debug artifacts
+.gemini-clipboard/
+.playwright-mcp/
+session-logs.md
+
+# Dashboard build output (run 'repowire build-ui' before 'uv build')
+web/out/

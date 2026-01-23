@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """Stop hook handler - captures responses and sends to daemon via HTTP."""
+
 from __future__ import annotations
 
 import json
 import os
 import sys
-import urllib.request
 import urllib.error
+import urllib.request
 from pathlib import Path
 
 from repowire.hooks._tmux import get_tmux_target
+from repowire.hooks.utils import DAEMON_URL, update_status
 from repowire.session.transcript import extract_last_assistant_response
 
-DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 PENDING_DIR = Path.home() / ".repowire" / "pending"
 
 
@@ -24,10 +25,12 @@ def tmux_to_filename(tmux_session: str) -> str:
 def send_to_daemon(correlation_id: str, response: str) -> bool:
     """Send a response to the daemon via HTTP."""
     try:
-        data = json.dumps({
-            "correlation_id": correlation_id,
-            "response": response,
-        }).encode("utf-8")
+        data = json.dumps(
+            {
+                "correlation_id": correlation_id,
+                "response": response,
+            }
+        ).encode("utf-8")
 
         req = urllib.request.Request(
             f"{DAEMON_URL}/hook/response",
@@ -38,7 +41,8 @@ def send_to_daemon(correlation_id: str, response: str) -> bool:
 
         with urllib.request.urlopen(req, timeout=5.0) as resp:
             return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError):
+    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        print(f"repowire: daemon request failed: {e}", file=sys.stderr)
         return False
 
 
@@ -52,6 +56,11 @@ def main() -> int:
     # Don't process if already in a hook chain
     if input_data.get("stop_hook_active", False):
         return 0
+
+    # Always mark peer as online when Claude finishes processing
+    cwd = input_data.get("cwd", os.getcwd())
+    peer_name = Path(cwd).name
+    update_status(peer_name, "online")
 
     transcript_path_str = input_data.get("transcript_path")
     if not transcript_path_str:
@@ -69,7 +78,7 @@ def main() -> int:
         return 0
 
     try:
-        with open(pending_file, "r") as f:
+        with open(pending_file) as f:
             pending = json.load(f)
     except (json.JSONDecodeError, OSError):
         return 0
@@ -84,7 +93,9 @@ def main() -> int:
     response = extract_last_assistant_response(transcript_path)
 
     if response:
-        send_to_daemon(correlation_id, response)
+        success = send_to_daemon(correlation_id, response)
+        if not success:
+            print(f"repowire: failed to deliver response for {correlation_id}", file=sys.stderr)
 
     # Clean up pending file
     pending_file.unlink(missing_ok=True)

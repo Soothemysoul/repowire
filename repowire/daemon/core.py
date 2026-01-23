@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import socket
-from datetime import datetime
-from typing import TYPE_CHECKING
+from collections import deque
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any
+from uuid import uuid4
+
+logger = logging.getLogger(__name__)
 
 from repowire.config.models import Config, PeerConfig, load_config
 from repowire.protocol.peers import Peer, PeerStatus
@@ -27,11 +32,37 @@ class PeerManager:
         self._peers: dict[str, Peer] = {}
         self._lock = asyncio.Lock()
         self._machine = socket.gethostname()
+        self._events: deque[dict[str, Any]] = deque(maxlen=100)
 
     @property
     def backend_name(self) -> str:
         """Get the backend name."""
         return self._backend.name
+
+    def _add_event(self, type: str, data: dict[str, Any]) -> str:
+        """Add an event to the history. Returns event ID."""
+        event_id = str(uuid4())
+        self._events.append(
+            {
+                "id": event_id,
+                "type": type,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                **data,
+            }
+        )
+        return event_id
+
+    def _update_event(self, event_id: str, updates: dict[str, Any]) -> bool:
+        """Update an existing event by ID."""
+        for event in self._events:
+            if event["id"] == event_id:
+                event.update(updates)
+                return True
+        return False
+
+    def get_events(self) -> list[dict[str, Any]]:
+        """Get the last 100 events."""
+        return list(self._events)
 
     async def start(self) -> None:
         """Start the peer manager and backend."""
@@ -45,7 +76,7 @@ class PeerManager:
         """Register a peer in the mesh."""
         async with self._lock:
             peer.status = PeerStatus.ONLINE
-            peer.last_seen = datetime.utcnow()
+            peer.last_seen = datetime.now(timezone.utc)
             self._peers[peer.name] = peer
 
     async def unregister_peer(self, name: str) -> bool:
@@ -75,8 +106,13 @@ class PeerManager:
 
         for peer_config in self._config.peers.values():
             if peer_config.name in seen:
-                # Use locally registered peer
-                result.append(local_peers[peer_config.name])
+                # Use locally registered peer, but verify status with backend
+                peer = local_peers[peer_config.name]
+                backend_status = self._backend.get_peer_status(peer_config)
+                # If backend says offline but we think online/busy, trust backend
+                if backend_status == PeerStatus.OFFLINE and peer.status != PeerStatus.OFFLINE:
+                    peer.status = PeerStatus.OFFLINE
+                result.append(peer)
             else:
                 # Build peer from config
                 status = self._backend.get_peer_status(peer_config)
@@ -87,7 +123,9 @@ class PeerManager:
                         machine=self._machine,
                         tmux_session=peer_config.tmux_session,
                         status=status,
-                        last_seen=datetime.utcnow() if status != PeerStatus.OFFLINE else None,
+                        last_seen=datetime.now(timezone.utc)
+                        if status != PeerStatus.OFFLINE
+                        else None,
                         metadata=peer_config.metadata,
                     )
                 )
@@ -104,9 +142,43 @@ class PeerManager:
         """Update peer status."""
         async with self._lock:
             if name in self._peers:
+                old_status = self._peers[name].status
                 self._peers[name].status = status
-                self._peers[name].last_seen = datetime.utcnow()
+                self._peers[name].last_seen = datetime.now(timezone.utc)
+                # Log status change event if status actually changed
+                if old_status != status:
+                    self._add_event(
+                        "status_change",
+                        {
+                            "peer": name,
+                            "new_status": status.value,
+                            "text": f"{name} is now {status.value}",
+                        },
+                    )
                 return True
+            else:
+                # Peer not in memory yet - reload config and create from it
+                self._config = load_config()
+                peer_config = self._config.get_peer(name)
+                if peer_config:
+                    self._peers[name] = Peer(
+                        name=name,
+                        path=peer_config.path,
+                        machine=self._machine,
+                        tmux_session=peer_config.tmux_session,
+                        status=status,
+                        last_seen=datetime.now(timezone.utc),
+                        metadata=peer_config.metadata,
+                    )
+                    self._add_event(
+                        "status_change",
+                        {
+                            "peer": name,
+                            "new_status": status.value,
+                            "text": f"{name} is now {status.value}",
+                        },
+                    )
+                    return True
             return False
 
     async def mark_offline(self, name: str) -> int:
@@ -175,7 +247,55 @@ class PeerManager:
             f"your response is automatically captured and returned to {from_peer}."
         )
 
-        return await self._backend.send_query(peer_config, formatted_query, timeout)
+        query_event_id = self._add_event(
+            "query",
+            {"from": from_peer, "to": to_peer, "text": text, "status": "pending"},
+        )
+
+        try:
+            response = await self._backend.send_query(peer_config, formatted_query, timeout)
+            # Update query event to success
+            self._update_event(query_event_id, {"status": "success"})
+            self._add_event(
+                "response",
+                {
+                    "from": to_peer,
+                    "to": from_peer,
+                    "text": response,
+                    "status": "success",
+                    "query_id": query_event_id,
+                },
+            )
+            return response
+        except (ValueError, TimeoutError) as e:
+            # Update query event to error for known error types
+            self._update_event(query_event_id, {"status": "error", "error_message": str(e)})
+            self._add_event(
+                "response",
+                {
+                    "from": to_peer,
+                    "to": from_peer,
+                    "text": str(e),
+                    "status": "error",
+                    "query_id": query_event_id,
+                },
+            )
+            raise
+        except Exception as e:
+            # Log unexpected errors and update events
+            logger.exception(f"Unexpected error during query to {to_peer}")
+            self._update_event(query_event_id, {"status": "error", "error_message": str(e)})
+            self._add_event(
+                "response",
+                {
+                    "from": to_peer,
+                    "to": from_peer,
+                    "text": str(e),
+                    "status": "error",
+                    "query_id": query_event_id,
+                },
+            )
+            raise
 
     async def notify(self, from_peer: str, to_peer: str, text: str) -> bool:
         """Send a notification to a peer (fire-and-forget).
@@ -201,10 +321,13 @@ class PeerManager:
         # Format the notification with sender info
         formatted_message = f"[Repowire Notification from @{from_peer}] {text}"
 
+        self._add_event("notification", {"from": from_peer, "to": to_peer, "text": text})
+
         try:
             await self._backend.send_message(peer_config, formatted_message)
             return True
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to send notification to {to_peer}: {e}")
             return False
 
     async def broadcast(
@@ -232,6 +355,8 @@ class PeerManager:
 
         formatted_message = f"[Repowire Broadcast from @{from_peer}] {text}"
 
+        self._add_event("broadcast", {"from": from_peer, "text": text})
+
         for peer_config in self._config.peers.values():
             if peer_config.name in exclude:
                 continue
@@ -249,8 +374,7 @@ class PeerManager:
             try:
                 await self._backend.send_message(peer_config, formatted_message)
                 sent_to.append(peer_config.name)
-            except Exception:
-                # Log but don't fail the broadcast
-                pass
+            except Exception as e:
+                logger.warning(f"Broadcast to {peer_config.name} failed: {e}")
 
         return sent_to

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -75,7 +75,7 @@ class ClaudemuxBackend(Backend):
             "correlation_id": correlation_id,
             "to_peer": peer.name,
             "query": text,
-            "timestamp": datetime.utcnow().isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         pending_file.write_text(json.dumps(pending_data))
 

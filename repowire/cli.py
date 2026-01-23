@@ -3,16 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import click
 from rich.console import Console
 from rich.table import Table
 
 from repowire import __version__
-
-if TYPE_CHECKING:
-    pass
 
 console = Console()
 
@@ -119,11 +115,49 @@ def setup(dev: bool, backend: str | None, no_service: bool) -> None:
         console.print("Daemon is running. Restart your IDE to use Repowire.")
 
 
+@main.command(name="build-ui")
+def build_ui() -> None:
+    """Build the web dashboard."""
+    import subprocess
+    import sys
+
+    web_dir = Path(__file__).parent.parent / "web"
+    if not web_dir.exists():
+        console.print("[red]Error: 'web' directory not found.[/]")
+        sys.exit(1)
+
+    console.print("[cyan]Building web dashboard...[/]")
+
+    # npm install
+    console.print("[dim]Running npm install...[/]")
+    try:
+        subprocess.run(["npm", "install"], cwd=web_dir, check=True)
+    except FileNotFoundError:
+        console.print(
+            "[red]Failed to run npm install: npm command not found. "
+            "Please ensure Node.js and npm are installed and in your PATH.[/]"
+        )
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Failed to run npm install: {e}[/]")
+        sys.exit(1)
+
+    # npm run build
+    console.print("[dim]Running npm run build...[/]")
+    try:
+        subprocess.run(["npm", "run", "build"], cwd=web_dir, check=True)
+        console.print("[green]✓ Web dashboard built successfully![/]")
+        console.print("Run 'repowire serve' to view it at http://localhost:8377/dashboard")
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Failed to build web dashboard: {e}[/]")
+        sys.exit(1)
+
+
 @main.command()
 def uninstall() -> None:
     """Remove all repowire components: hooks, MCP server, and daemon service."""
     from repowire.config.models import load_config
-    from repowire.service.installer import get_platform, get_service_status, uninstall_service
+    from repowire.service.installer import get_service_status, uninstall_service
 
     config = load_config()
     backend = config.daemon.backend or "claudemux"
@@ -227,7 +261,6 @@ def status() -> None:
         with httpx.Client(timeout=2.0) as client:
             resp = client.get(f"{_get_daemon_url()}/health")
             resp.raise_for_status()
-            data = resp.json()
             console.print(f"[green]✓[/] Daemon responding at {_get_daemon_url()}")
     except httpx.ConnectError:
         console.print(f"[yellow]✗[/] Daemon not responding at {_get_daemon_url()}")
@@ -484,9 +517,12 @@ def peer_list() -> None:
 
     for p in peers:
         status = p.get("status", "unknown")
-        status_color = (
-            "green" if status == "online" else ("yellow" if status == "unknown" else "red")
-        )
+        if status == "online":
+            status_color = "green"
+        elif status == "unknown":
+            status_color = "yellow"
+        else:
+            status_color = "red"
         table.add_row(
             p.get("name", "?"),
             f"[{status_color}]{status}[/]",
@@ -741,7 +777,7 @@ def daemon_status() -> None:
             resp = client.get(f"{_get_daemon_url()}/health")
             resp.raise_for_status()
             data = resp.json()
-            console.print(f"[green]Daemon is running[/]")
+            console.print("[green]Daemon is running[/]")
             console.print(f"  Backend: {data.get('backend', 'unknown')}")
             console.print(f"  Relay: {'enabled' if data.get('relay_mode') else 'disabled'}")
     except httpx.ConnectError:
@@ -782,7 +818,7 @@ def relay_generate_key(user_id: str, name: str) -> None:
     from repowire.relay.auth import generate_api_key
 
     api_key = generate_api_key(user_id, name)
-    console.print(f"[green]Generated API key:[/]")
+    console.print("[green]Generated API key:[/]")
     console.print(f"  {api_key.key}")
     console.print("")
     console.print("[yellow]Save this key - it won't be shown again![/]")
@@ -914,6 +950,26 @@ def hook_session() -> None:
     from repowire.hooks.session_handler import main as session_main
 
     sys.exit(session_main())
+
+
+@hook.command(name="prompt")
+def hook_prompt() -> None:
+    """Handle UserPromptSubmit hook - mark peer as busy."""
+    import sys
+
+    from repowire.hooks.prompt_handler import main as prompt_main
+
+    sys.exit(prompt_main())
+
+
+@hook.command(name="notification")
+def hook_notification() -> None:
+    """Handle Notification hook - mark peer as online on idle."""
+    import sys
+
+    from repowire.hooks.notification_handler import main as notification_main
+
+    sys.exit(notification_main())
 
 
 if __name__ == "__main__":

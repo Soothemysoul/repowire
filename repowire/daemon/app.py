@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 import signal
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, AsyncIterator, Callable
+from typing import TYPE_CHECKING
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 from repowire.backends import get_backend as get_backend_by_name
 from repowire.config.models import Config, load_config
@@ -24,7 +27,7 @@ __version__ = "0.1.0"
 
 def create_app(
     config: Config | None = None,
-    backend_factory: Callable[[], "Backend"] | None = None,
+    backend_factory: Callable[[], Backend] | None = None,
     backend_override: str | None = None,
     relay_mode: bool = False,
 ) -> FastAPI:
@@ -33,7 +36,6 @@ def create_app(
     Args:
         config: Optional configuration. Loaded from disk if not provided.
         backend_factory: Optional factory function to create the backend.
-                        If not provided, uses config or claudemux by default.
         backend_override: Override the configured backend (claudemux or opencode).
         relay_mode: Enable relay mode for remote peer communication.
 
@@ -104,6 +106,53 @@ def create_app(
     app.include_router(peers.router)
     app.include_router(messages.router)
 
+    # --- Static File Serving (Dashboard) ---
+    # Find the web output directory - check multiple locations
+    web_out = None
+
+    # 1. Dev mode: relative to repo root (3 dirs up from app.py)
+    dev_base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    dev_web_out = os.path.join(dev_base, "web", "out")
+
+    # 2. Installed mode: web/out is sibling to repowire package in site-packages
+    import sys
+
+    for path in sys.path:
+        installed_web_out = os.path.join(path, "web", "out")
+        if os.path.exists(installed_web_out) and os.path.isfile(
+            os.path.join(installed_web_out, "dashboard.html")
+        ):
+            web_out = installed_web_out
+            break
+
+    # Prefer dev mode if available (for local development)
+    if os.path.exists(dev_web_out) and os.path.isfile(os.path.join(dev_web_out, "dashboard.html")):
+        web_out = dev_web_out
+
+    if web_out and os.path.exists(web_out):
+        # Mount the _next directory for assets
+        next_static = os.path.join(web_out, "_next")
+        if os.path.exists(next_static):
+            app.mount("/_next", StaticFiles(directory=next_static), name="next_static")
+
+        # Serve specific routes
+        @app.get("/dashboard", response_class=HTMLResponse, include_in_schema=False)
+        async def serve_dashboard():
+            dashboard_path = os.path.join(web_out, "dashboard.html")
+            if os.path.exists(dashboard_path):
+                return FileResponse(dashboard_path)
+            return HTMLResponse("Dashboard not found. Please run 'repowire build-ui'.")
+
+        @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+        async def serve_landing():
+            index_path = os.path.join(web_out, "index.html")
+            if os.path.exists(index_path):
+                return FileResponse(index_path)
+            return HTMLResponse("Landing page not found. Please run 'repowire build-ui'.")
+
+        # Mount the rest of the static files (images, icons, etc.)
+        app.mount("/", StaticFiles(directory=web_out), name="web_static")
+
     # Add shutdown endpoint
     @app.post("/shutdown", include_in_schema=False)
     async def shutdown():
@@ -119,7 +168,7 @@ def create_app(
 
 def create_test_app(
     config: Config | None = None,
-    backend: "Backend | None" = None,
+    backend: Backend | None = None,
 ) -> FastAPI:
     """Create app for testing with optional mock backend."""
 

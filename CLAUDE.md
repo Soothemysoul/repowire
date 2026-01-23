@@ -30,6 +30,26 @@ repowire setup --dev          # dev mode (uses local code)
 repowire setup --backend claudemux
 ```
 
+## Dashboard & Observability
+
+Repowire includes a "Cyber-Minimalist Control Plane" dashboard for monitoring inter-agent communication.
+
+- **URL**: `http://localhost:8377/dashboard` (when `repowire serve` is running)
+- **Architecture**: Next.js static export served by the Python FastAPI daemon.
+- **Event Logging**: The `PeerManager` maintains an in-memory circular buffer of the last 100 communication events (queries, responses, broadcasts).
+- **Relay Support**: The UI includes a connection interface for entering secrets for the hosted relay.
+
+### Dashboard Development
+
+```bash
+# Build the UI and export static files to web/out/
+repowire build-ui
+
+# Run frontend in development mode with hot reloading
+cd web
+npm run dev # runs on http://localhost:3000
+```
+
 ## Architecture Overview
 
 Repowire is a mesh network enabling Claude Code sessions to communicate. It has a **pluggable backend architecture** supporting both local (tmux) and remote (OpenCode SDK) message delivery.
@@ -93,16 +113,22 @@ All backends implement:
 
 ### Hooks System (claudemux only)
 
-Hooks in `~/.claude/settings.json` auto-register peers and capture responses:
+Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 
-- **SessionStart** → `repowire hook session` → Registers peer (name = folder name, git branch in metadata), outputs `additionalContext` with peer list
-- **SessionEnd** → `repowire hook session` → Clears session_id
-- **Stop** → `repowire hook stop` → Extracts last assistant response from transcript, sends via HTTP POST `/hook/response`
+- **SessionStart** → `repowire hook session` → Registers peer, outputs `additionalContext` with peer list
+- **SessionEnd** → `repowire hook session` → Marks peer offline
+- **UserPromptSubmit** → `repowire hook prompt` → Marks peer as BUSY
+- **Stop** → `repowire hook stop` → Extracts response from transcript, marks peer ONLINE
+- **Notification** (idle_prompt) → `repowire hook notification` → Marks peer ONLINE after 60s idle (handles interrupt)
+
+**Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, SessionEnd→OFFLINE)
 
 Key files:
 - `hooks/installer.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
-- `hooks/session_handler.py` - Handles both SessionStart and SessionEnd events
-- `hooks/stop_handler.py` - Captures response from transcript JSONL, sends to daemon
+- `hooks/session_handler.py` - Handles SessionStart and SessionEnd events
+- `hooks/prompt_handler.py` - Handles UserPromptSubmit (sets BUSY)
+- `hooks/stop_handler.py` - Captures response from transcript, sends to daemon
+- `hooks/notification_handler.py` - Handles idle_prompt (resets BUSY→ONLINE after interrupt)
 
 ### Configuration
 
@@ -306,6 +332,7 @@ repowire peer unregister project-b
 | Query timeout | Check daemon running: `curl http://127.0.0.1:8377/health` |
 | Wrong peer name | Peer name = folder name, not tmux window name |
 | Hook not firing | Check `~/.claude/settings.json` has repowire hooks |
+| Peer stuck as busy | User interrupted (Escape). Wait 60s for idle_prompt, or send any prompt to trigger Stop |
 
 ### Quick Verification Script (Claudemux)
 

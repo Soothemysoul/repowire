@@ -5,12 +5,14 @@ from pathlib import Path
 
 CLAUDE_SETTINGS = Path.home() / ".claude" / "settings.json"
 
+HOOK_EVENTS = ["Stop", "SessionStart", "SessionEnd", "UserPromptSubmit", "Notification"]
+
 
 def _load_claude_settings() -> dict:
     if not CLAUDE_SETTINGS.exists():
         return {}
     try:
-        with open(CLAUDE_SETTINGS, "r") as f:
+        with open(CLAUDE_SETTINGS) as f:
             return json.load(f)
     except json.JSONDecodeError:
         return {}
@@ -33,6 +35,18 @@ def _make_hook_config(command: str) -> dict:
     }
 
 
+def _make_notification_hook_config(command: str, matcher: str) -> dict:
+    return {
+        "matcher": matcher,
+        "hooks": [
+            {
+                "type": "command",
+                "command": command,
+            }
+        ],
+    }
+
+
 def install_hooks(dev: bool = False) -> bool:
     pending_dir = Path.home() / ".repowire" / "pending"
     pending_dir.mkdir(parents=True, exist_ok=True)
@@ -51,6 +65,10 @@ def install_hooks(dev: bool = False) -> bool:
     settings["hooks"]["Stop"] = [_make_hook_config(f"{base_cmd} hook stop")]
     settings["hooks"]["SessionStart"] = [_make_hook_config(f"{base_cmd} hook session")]
     settings["hooks"]["SessionEnd"] = [_make_hook_config(f"{base_cmd} hook session")]
+    settings["hooks"]["UserPromptSubmit"] = [_make_hook_config(f"{base_cmd} hook prompt")]
+    settings["hooks"]["Notification"] = [
+        _make_notification_hook_config(f"{base_cmd} hook notification", "idle_prompt")
+    ]
 
     _save_claude_settings(settings)
     return True
@@ -62,7 +80,7 @@ def uninstall_hooks() -> bool:
     if "hooks" not in settings:
         return True
 
-    for event in ["Stop", "SessionStart", "SessionEnd"]:
+    for event in HOOK_EVENTS:
         if event in settings["hooks"]:
             del settings["hooks"][event]
 
@@ -78,7 +96,4 @@ def check_hooks_installed() -> bool:
     if "hooks" not in settings:
         return False
 
-    return all(
-        event in settings["hooks"]
-        for event in ["Stop", "SessionStart", "SessionEnd"]
-    )
+    return all(event in settings["hooks"] for event in HOOK_EVENTS)
