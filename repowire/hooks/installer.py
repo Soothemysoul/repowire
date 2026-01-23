@@ -75,20 +75,24 @@ def install_hooks(dev: bool = False) -> bool:
 
 
 def uninstall_hooks() -> bool:
+    """Remove repowire hooks. Returns True if hooks were removed, False if none existed."""
     settings = _load_claude_settings()
 
     if "hooks" not in settings:
-        return True
+        return False
 
+    removed_any = False
     for event in HOOK_EVENTS:
         if event in settings["hooks"]:
             del settings["hooks"][event]
+            removed_any = True
 
     if not settings["hooks"]:
         del settings["hooks"]
 
-    _save_claude_settings(settings)
-    return True
+    if removed_any:
+        _save_claude_settings(settings)
+    return removed_any
 
 
 def check_hooks_installed() -> bool:

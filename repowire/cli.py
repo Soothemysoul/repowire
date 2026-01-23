@@ -193,8 +193,10 @@ def _uninstall_claudemux() -> None:
 
     # Remove hooks
     try:
-        uninstall_hooks()
-        console.print("[green]✓[/] Claude Code hooks removed")
+        if uninstall_hooks():
+            console.print("[green]✓[/] Claude Code hooks removed")
+        else:
+            console.print("[dim]Claude Code hooks not installed[/]")
     except Exception as e:
         console.print(f"[yellow]![/] Failed to remove hooks: {e}")
 
