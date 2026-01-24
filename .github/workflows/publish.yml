@@ -17,6 +17,9 @@ jobs:
         with:
           node-version: '20'
 
+      - name: Set version from tag
+        run: uv version ${GITHUB_REF#refs/tags/v}
+
       - name: Build UI
         run: cd web && npm ci && npm run build
 
