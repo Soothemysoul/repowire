@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install dependencies
+        run: |
+          mkdir -p web/out
+          uv sync --all-extras
+
+      - name: Lint
+        run: uvx ruff check repowire/
+
+      - name: Type check
+        run: uv run ty check repowire/
+
+      - name: Test
+        run: uv run pytest
