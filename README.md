@@ -19,6 +19,21 @@ AI coding agents work great in a single repo, but multi-repo projects need a **c
 
 Read more about it in my blog where I describe [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind building Repowire](https://prassanna.io/blog/repowire/).
 
+<details>
+<summary><strong>How does repowire compare with other projects?</strong></summary>
+
+| Project | Type | How it works | Best for |
+|---------|------|--------------|----------|
+| **Repowire** | Sync | Live agent-to-agent queries | Cross-repo collaboration, 5-10 peers |
+| **[Gastown](https://github.com/steveyegge/gastown)** | Async | Work orchestration with persistent mail (beads) | Coordinated fleets, 20-30 agents, single codebase |
+| **[Claude Squad](https://github.com/smtg-ai/claude-squad)** | Isolated | Session management with worktrees | Multiple independent Claude sessions |
+| **[Memory Bank](https://docs.tinyfat.com/guides/memory-bank/)** | Async | Structured markdown files, human-curated | Persistent project knowledge |
+| **[Polyrepo MCP](https://blackdoglabs.io/blog/claude-code-decoded-multi-repo-context)** | Async | MCP server loading cross-repo context | Pre-loaded multi-repo context |
+
+**Repowire vs Gastown:** Repowire is a phone call (real-time, ephemeral). Gastown is email + project manager (async, persistent, orchestrated). Repowire bets on emergence - give agents a way to talk and a working methodology develops organically as sessions discover how to best use each other. Gastown bets on structure - Mayor, convoys, formulas. For 5-10 agents, emergence works. For 20-30 grinding through backlogs, you probably need the structure.
+
+</details>
+
 [![asciicast](https://asciinema.org/a/772201.svg)](https://asciinema.org/a/772201)
 
 ## Installation
