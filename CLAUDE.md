@@ -19,7 +19,9 @@ pytest -k "test_add_peer"     # single test by name
 # Linting and type checking
 ruff check repowire/          # lint
 ruff format repowire/         # format
-mypy repowire/                # type check
+uv run ty check repowire/     # type check
+
+# CI runs: ruff check, ty check, pytest (see .github/workflows/ci.yml)
 
 # Start daemon
 repowire serve                # default: 127.0.0.1:8377
@@ -37,7 +39,6 @@ Repowire includes a "Cyber-Minimalist Control Plane" dashboard for monitoring in
 - **URL**: `http://localhost:8377/dashboard` (when `repowire serve` is running)
 - **Architecture**: Next.js static export served by the Python FastAPI daemon.
 - **Event Logging**: The `PeerManager` maintains an in-memory circular buffer of the last 100 communication events (queries, responses, broadcasts).
-- **Relay Support**: The UI includes a connection interface for entering secrets for the hosted relay.
 
 ### Dashboard Development
 
@@ -140,10 +141,8 @@ daemon:
   port: 8377
   backend: "claudemux"  # or "opencode"
 
-relay:
+relay:  # Experimental - not usable yet
   enabled: false
-  url: "wss://relay.repowire.io"
-  api_key: null
 
 opencode:
   default_url: "http://localhost:4096"
@@ -152,6 +151,7 @@ peers:
   frontend:
     name: frontend
     path: "/path/to/frontend"
+    circle: "myteam"              # optional, defaults to tmux session name
     tmux_session: "0:frontend"    # for claudemux backend
     opencode_url: "http://..."    # for opencode backend
     session_id: "..."             # Claude session ID (set by hooks)
@@ -159,7 +159,6 @@ peers:
       branch: "main"              # git branch (auto-populated by SessionStart hook)
 ```
 
-Environment overrides: `REPOWIRE_RELAY_URL`, `REPOWIRE_API_KEY`
 
 ### Protocol (protocol/)
 
@@ -169,6 +168,15 @@ All messages have: `id`, `type`, `from_peer`, `to_peer`, `payload`, `correlation
 
 Peer status: `ONLINE`, `BUSY`, `OFFLINE`
 
+### Circles (Peer Isolation)
+
+Circles are logical subnets that isolate groups of peers. Peers can only communicate within their circle unless explicitly allowed.
+
+- **Default circle**: Derived from tmux session name
+- **Set via CLI**: `repowire peer register --circle myteam`
+- **Set via config**: Add `circle: myteam` to peer config
+- **Bypass**: CLI commands bypass circle restrictions by default
+
 ### HTTP API Endpoints
 
 | Endpoint | Method | Purpose |
@@ -177,11 +185,14 @@ Peer status: `ONLINE`, `BUSY`, `OFFLINE`
 | `/peers` | GET | List all peers |
 | `/peers` | POST | Register peer |
 | `/peers/{name}` | DELETE | Unregister peer |
+| `/peers/{name}/offline` | POST | Mark peer offline, cancel pending queries |
 | `/query` | POST | Send query, wait for response |
 | `/notify` | POST | Send notification (fire-and-forget) |
 | `/broadcast` | POST | Send to all peers |
 | `/session/update` | POST | Update peer session status |
 | `/hook/response` | POST | Receive response from Stop hook (claudemux) |
+| `/events` | GET | Get last 100 communication events |
+| `/events/stream` | GET | SSE stream of real-time events |
 
 ## Key Design Decisions
 
