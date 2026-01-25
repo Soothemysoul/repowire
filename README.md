@@ -19,6 +19,8 @@ AI coding agents work great in a single repo, but multi-repo projects need a **c
 
 Read more about it in my blog where I describe [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind building Repowire](https://prassanna.io/blog/repowire/).
 
+[![asciicast](https://asciinema.org/a/772201.svg)](https://asciinema.org/a/772201)
+
 ## Installation
 
 **Requirements:** macOS or Linux, Python 3.10+, tmux (for claudemux backend)
