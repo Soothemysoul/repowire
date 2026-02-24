@@ -9,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from repowire.daemon.auth import require_auth
+from repowire.config.models import DEFAULT_QUERY_TIMEOUT
+from repowire.daemon.auth import require_auth, require_localhost
 from repowire.daemon.deps import get_peer_manager
 from repowire.protocol.peers import PeerStatus
 
@@ -22,8 +23,9 @@ class QueryRequest(BaseModel):
     from_peer: str | None = Field(None, description="Name of the sending peer (optional for CLI)")
     to_peer: str = Field(..., description="Name of the target peer")
     text: str = Field(..., description="Query text")
-    timeout: float = Field(default=120.0, description="Timeout in seconds")
+    timeout: float = Field(default=DEFAULT_QUERY_TIMEOUT, description="Timeout in seconds")
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
+    circle: str | None = Field(None, description="Circle to scope target peer lookup")
 
 
 class QueryResponse(BaseModel):
@@ -73,13 +75,6 @@ class OkResponse(BaseModel):
     ok: bool = True
 
 
-class HookResponseRequest(BaseModel):
-    """Request from Stop hook with captured response."""
-
-    correlation_id: str = Field(..., description="Correlation ID of the pending query")
-    response: str = Field(..., description="Captured response text")
-
-
 @router.post("/query", response_model=QueryResponse)
 async def query_peer(
     request: QueryRequest,
@@ -89,7 +84,7 @@ async def query_peer(
     peer_manager = get_peer_manager()
 
     # Check peer state before attempting query
-    peer = await peer_manager.get_peer(request.to_peer)
+    peer = await peer_manager.get_peer(request.to_peer, circle=request.circle)
     if peer:
         if peer.status == PeerStatus.BUSY:
             return QueryResponse(
@@ -114,6 +109,7 @@ async def query_peer(
             text=request.text,
             timeout=request.timeout,
             bypass_circle=bypass,
+            circle=request.circle,
         )
         return QueryResponse(text=response_text)
     except ValueError as e:
@@ -186,19 +182,7 @@ async def update_session(
             detail=f"Invalid status: {request.status}. Must be one of: online, busy, offline",
         )
 
-    updated = await peer_manager.update_peer_status(request.peer_name, peer_status)
-    if not updated:
-        # Peer might not be registered yet - that's okay for session updates
-        pass
-
-    return OkResponse()
-
-
-@router.post("/hook/response", response_model=OkResponse)
-async def hook_response(request: HookResponseRequest) -> OkResponse:
-    """Receive response from Stop hook (no auth - called by local hooks)."""
-    peer_manager = get_peer_manager()
-    peer_manager.resolve_hook_response(request.correlation_id, request.response)
+    await peer_manager.update_peer_status(request.peer_name, peer_status)
     return OkResponse()
 
 
@@ -212,25 +196,50 @@ async def get_events(
 
 
 @router.get("/events/stream")
-async def stream_events() -> StreamingResponse:
+async def stream_events(
+    _: None = Depends(require_localhost),
+) -> StreamingResponse:
     """Stream events via Server-Sent Events (SSE).
 
     Clients connect once and receive events as they occur.
-    No auth required - dashboard uses this for real-time updates.
+    Restricted to localhost.
     """
     peer_manager = get_peer_manager()
 
     async def event_generator():
-        last_count = 0
+        last_event_id: str | None = None
         while True:
             events = peer_manager.get_events()
-            current_count = len(events)
 
-            # Send new events since last check
-            if current_count > last_count:
-                for event in events[last_count:]:
+            # Find new events since last seen ID
+            if not events:
+                await asyncio.sleep(0.5)
+                continue
+
+            if last_event_id is None:
+                # First poll: send all current events
+                for event in events:
                     yield f"data: {json.dumps(event)}\n\n"
-                last_count = current_count
+                last_event_id = events[-1]["id"]
+            else:
+                # Find index after last seen event
+                new_events = []
+                seen = False
+                for event in events:
+                    if seen:
+                        new_events.append(event)
+                    elif event["id"] == last_event_id:
+                        seen = True
+
+                if not seen:
+                    # last_event_id was evicted from deque; send all
+                    new_events = events
+
+                for event in new_events:
+                    yield f"data: {json.dumps(event)}\n\n"
+
+                if new_events:
+                    last_event_id = new_events[-1]["id"]
 
             await asyncio.sleep(0.5)
 

@@ -5,10 +5,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Build & Development Commands
 
 ```bash
-# Install dependencies
-pip install -e "."            # core (includes libtmux)
-pip install -e ".[dev]"       # dev tools (pytest, ruff, ty)
-pip install -e ".[relay]"     # relay server deps
+# Install as global tool from local source (for dev/testing)
+uv tool install --force --reinstall .
+
+# Install dev dependencies (for running tests/linting)
+uv sync --extra dev
 
 # Run tests
 pytest                        # all tests
@@ -22,13 +23,12 @@ uv run ty check repowire/     # type check
 
 # CI runs: ruff check, ty check, pytest (see .github/workflows/ci.yml)
 
-# Start daemon (per-peer routing auto-detects backend)
+# Start daemon
 repowire serve                # default: 127.0.0.1:8377
 repowire serve --port 8080
 
-# Setup (auto-detects and configures all available backends)
-repowire setup --dev          # dev mode (uses local code)
-repowire setup                # production mode
+# Setup (auto-detects installed agent types)
+repowire setup
 
 # Launch TUI dashboard
 repowire top
@@ -67,34 +67,30 @@ repowire top                    # default: http://127.0.0.1:8377
 repowire top --port 8080        # custom port
 ```
 
-### Main Screen Layout
+### Layout
 
-- Left pane: Peer list grouped by circle
-- Right pane: Peer details + Activity log
+Tabbed interface with three tabs:
+
+- **Agents** - Peer list grouped by circle (left) + inline detail panel (right)
+- **Communications** - Real-time SSE feed of queries, responses, broadcasts
+- **Create** - Form to spawn new peers (name, path, circle, agent type)
 
 ### Keybindings
 
 | Key | Action |
 |-----|--------|
 | `q` | Quit |
-| `n` | Spawn new peer |
-| `s` | Attach to peer's tmux session |
-| `k` | Kill peer (with confirmation) |
-| `c` | Change peer's circle |
-| `e` | View event log |
-| `r` | Refresh |
-| `/` | Filter peers |
-| `tab` | Focus conversation log |
-| `j`/`k` | Navigate (vim-style) |
-| `o` | Toggle offline peers |
+| `s` | Attach to selected peer's tmux session |
+| `r` | Refresh peer list |
+| `j`/`k` | Navigate peer list (vim-style) |
 
 ### Key Files
 
-- `tui/app.py` - Main application
-- `tui/screens/main.py` - Main screen layout
-- `tui/screens/spawn.py` - Spawn modal with path autocomplete
-- `tui/widgets/peer_list.py` - Peer list with circle grouping
-- `tui/widgets/activity_log.py` - Real-time SSE event stream
+- `tui/app.py` - Main application (single-screen tabbed layout)
+- `tui/widgets/agent_list.py` - Peer list with circle grouping
+- `tui/widgets/communication_feed.py` - Real-time SSE communication feed
+- `tui/widgets/create_agent_form.py` - Spawn form with circle selector
+- `tui/widgets/status_bar.py` - Footer with keybinds and peer counts
 - `tui/services/daemon_client.py` - HTTP client for daemon API
 - `tui/services/sse_stream.py` - SSE stream client
 
@@ -104,7 +100,7 @@ repowire top --port 8080        # custom port
 
 ```bash
 repowire peer new [PATH] [options]
-  --backend, -b    claudemux or opencode (default: claudemux)
+  --backend, -b    claude-code or opencode (default: claude-code)
   --command, -c    Custom command (default: claude/opencode)
   --circle         Circle name (default: "default")
 ```
@@ -112,8 +108,8 @@ repowire peer new [PATH] [options]
 ### Core Module (`spawn.py`)
 
 - `SpawnConfig` - Configuration dataclass (path, circle, backend, command)
-- `SpawnResult` - Result dataclass (pane_id, display_name, tmux_session, registered)
-- `spawn_peer(config)` - Creates tmux window, runs command, registers with daemon
+- `SpawnResult` - Result dataclass (display_name, tmux_session)
+- `spawn_peer(config)` - Creates tmux window, runs command
 - `kill_peer(tmux_session)` - Kills tmux window
 - `attach_session(tmux_session)` - Attaches to tmux session
 
@@ -125,7 +121,7 @@ repowire peer new [PATH] [options]
 
 ## Architecture Overview
 
-Repowire is a mesh network enabling Claude Code sessions to communicate. It has a **pluggable backend architecture** supporting both local (tmux) and remote (OpenCode SDK) message delivery.
+Repowire is a mesh network enabling AI coding agents to communicate. All message delivery goes through a unified WebSocket protocol — the daemon treats all peers identically regardless of agent type.
 
 ### Core Components
 
@@ -140,51 +136,50 @@ Repowire is a mesh network enabling Claude Code sessions to communicate. It has 
 ┌─────────────────────────────────────────────────────────────┐
 │                  HTTP Daemon (daemon/app.py)                 │
 │  FastAPI server with /query, /notify, /broadcast, /peers    │
-│  endpoints. Uses PeerManager for routing.                   │
+│  endpoints. Uses PeerManager for routing via WebSocket.     │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  PeerManager (daemon/core.py)                │
-│  Central routing. Validates backend requirements, formats   │
-│  messages, delegates to configured backend.                 │
+│  Central routing. All peers connect via WebSocket.          │
+│  AgentType tracks what tool a peer runs (informational).    │
 └─────────────────────────────────────────────────────────────┘
-                              │
-              ┌───────────────┴───────────────┐
-              ▼                               ▼
-┌─────────────────────────┐     ┌─────────────────────────┐
-│   ClaudemuxBackend      │     │    OpencodeBackend      │
-│   (backends/claudemux/) │     │   (backends/opencode/)  │
-│                         │     │                         │
-│ - Uses libtmux          │     │ - WebSocket plugin      │
-│ - Requires tmux_session │     │ - Plugin injects via SDK│
-│ - Response via hooks    │     │ - Response via WebSocket│
-└─────────────────────────┘     └─────────────────────────┘
+         │              │                │
+         ▼              ▼                ▼
+  MessageRouter    QueryTracker    SessionMapper
+  (routes msgs)    (correlation    (peer identity
+                    ID tracking)    persistence)
+         │
+         ▼
+  WebSocketTransport
+  (connection mgmt)
 ```
 
-### Backend Interface (backends/base.py)
+### Daemon Modules
 
-All backends implement:
-- `send_message(peer, text)` - Fire-and-forget
-- `send_query(peer, text, timeout)` - Wait for response
-- `get_peer_status(peer)` - Check online/offline
-- `install()` / `uninstall()` / `check_installed()`
+- `daemon/core.py` - PeerManager: peer registry, circle access control, event tracking
+- `daemon/message_router.py` - MessageRouter: routes queries/notifications/broadcasts via WebSocket
+- `daemon/query_tracker.py` - QueryTracker: correlation ID tracking, asyncio Futures for request/response
+- `daemon/websocket_transport.py` - WebSocketTransport: connection lifecycle, reconnection handling
+- `daemon/session_mapper.py` - SessionMapper: stable peer IDs (`repow-{circle}-{uuid8}`), persists to `~/.repowire/sessions.json`
+- `daemon/auth.py` - Authentication middleware (optional token-based)
+- `daemon/deps.py` - FastAPI dependency injection
+- `daemon/routes/websocket.py` - Unified `/ws` endpoint for all agent types
+- `daemon/routes/peers.py` - Peer CRUD endpoints
+- `daemon/routes/messages.py` - Query/notify/broadcast endpoints
 
-### Message Flow: Query with Claudemux Backend
+### Message Flow: Query
 
 ```
 1. MCP tool ask_peer() → HTTP POST /query
-2. PeerManager formats: "@{from_peer} asks: {text}"
-3. Backend creates pending file: ~/.repowire/pending/{tmux_session}.json
-4. Backend sends to tmux pane via libtmux
-5. Claude processes, responds
-6. Stop hook fires → reads transcript → extracts last assistant response
-7. Stop hook sends to daemon via HTTP POST /hook/response
-8. Backend resolves asyncio.Future with response
-9. Response returned to caller
+2. PeerManager routes via WebSocket to target peer
+3. Peer's hook/plugin processes query
+4. Response sent back via WebSocket
+5. Response returned to caller
 ```
 
-### Hooks System (claudemux only)
+### Hooks System (Claude Code)
 
 Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 
@@ -196,12 +191,40 @@ Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 
 **Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, SessionEnd→OFFLINE)
 
+**WebSocket Hook Lifecycle:**
+- SessionStart spawns a `websocket_hook.py` background process (skips if one is already alive for the pane)
+- SessionEnd marks peer offline but does NOT kill the ws-hook (SessionEnd fires spuriously between turns)
+- The ws-hook self-terminates via a pane liveness checker when the agent exits (~30s after pane goes idle)
+
 Key files:
-- `hooks/installer.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
+- `installers/claude_code.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
 - `hooks/session_handler.py` - Handles SessionStart and SessionEnd events
 - `hooks/prompt_handler.py` - Handles UserPromptSubmit (sets BUSY)
-- `hooks/stop_handler.py` - Captures response from transcript, sends to daemon
+- `hooks/stop_handler.py` - Captures response from transcript, forwards via file
 - `hooks/notification_handler.py` - Handles idle_prompt (resets BUSY→ONLINE after interrupt)
+- `hooks/websocket_hook.py` - Persistent WebSocket connection for query/response delivery
+
+### Security
+
+**WebSocket Authentication (Optional)**
+
+To prevent unauthorized WebSocket connections to the daemon, you can enable authentication:
+
+1. Add `auth_token` to your config (`~/.repowire/config.yaml`):
+```yaml
+daemon:
+  auth_token: "your-secret-token-here"
+```
+
+2. For OpenCode peers, set the environment variable before starting OpenCode:
+```bash
+export REPOWIRE_AUTH_TOKEN="your-secret-token-here"
+opencode  # or your preferred launcher
+```
+
+**CORS Protection**
+
+The daemon restricts CORS to localhost origins only (`http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:8377`, `http://127.0.0.1:8377`) to prevent CSRF attacks from malicious websites.
 
 ### Configuration
 
@@ -211,22 +234,18 @@ File: `~/.repowire/config.yaml`
 daemon:
   host: "127.0.0.1"
   port: 8377
-  # Per-peer routing auto-detects backend based on peer config
+  # Security (optional): WebSocket authentication
+  auth_token: "your-secret-token-here"  # Optional: require auth for WebSocket connections
 
 relay:  # Experimental - not usable yet
   enabled: false
-
-opencode:
-  default_url: "http://localhost:4096"
 
 peers:
   frontend:
     name: frontend
     path: "/path/to/frontend"
     circle: "myteam"              # optional, defaults to tmux session name
-    tmux_session: "0:frontend"    # for claudemux backend
-    opencode_url: "http://..."    # for opencode backend
-    session_id: "..."             # Claude session ID (set by hooks)
+    tmux_session: "0:frontend"    # for Claude Code peers
     metadata:
       branch: "main"              # git branch (auto-populated by SessionStart hook)
 ```
@@ -234,21 +253,23 @@ peers:
 
 ### Protocol (protocol/)
 
-Message types: `QUERY`, `RESPONSE`, `NOTIFICATION`, `BROADCAST`
+Message types: `query`, `response`, `notify`, `broadcast`, `status`, `error`
 
-All messages have: `id`, `type`, `from_peer`, `to_peer`, `payload`, `correlation_id`, `timestamp`
+WebSocket messages use: `type`, `correlation_id`, `from_peer`, `text`
 
 Peer status: `ONLINE`, `BUSY`, `OFFLINE`
 
+`DEFAULT_QUERY_TIMEOUT` (`config/models.py`): 300s (5 min). Used by CLI, daemon API, and message router. For long-running queries, prefer `notify_peer` (fire-and-forget) over `ask_peer` (blocking).
+
 ### Key Types
 
-**BackendType** (`config/models.py`): `Literal["claudemux", "opencode"]`
+**AgentType** (`config/models.py`): Enum with `CLAUDE_CODE = "claude-code"`, `OPENCODE = "opencode"`
 
 **PeerStatus** (`protocol/peers.py`): Enum with `ONLINE`, `BUSY`, `OFFLINE`
 
 **Peer Identity:**
-- Primary: `pane_id` (tmux pane ID like `%42`)
-- Secondary: `display_name` (folder name, for backward compat)
+- Primary: `peer_id` (daemon-assigned: `repow-{circle}-{uuid8}`, e.g., `repow-dev-a1b2c3d4`)
+- Secondary: `display_name` (folder name, for human-friendly addressing)
 
 **Status Symbols (TUI):**
 - `●` online (green)
@@ -268,7 +289,7 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 
 | Endpoint | Method | Purpose |
 |----------|--------|---------|
-| `/health` | GET | Health check with backend info |
+| `/health` | GET | Health check |
 | `/peers` | GET | List all peers |
 | `/peers` | POST | Register peer |
 | `/peers/{name}` | DELETE | Unregister peer |
@@ -277,7 +298,6 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 | `/notify` | POST | Send notification (fire-and-forget) |
 | `/broadcast` | POST | Send to all peers |
 | `/session/update` | POST | Update peer session status |
-| `/hook/response` | POST | Receive response from Stop hook (claudemux) |
 | `/events` | GET | Get last 100 communication events |
 | `/events/stream` | GET | SSE stream of real-time events |
 
@@ -285,9 +305,9 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 
 1. **Peer name = folder name** - Auto-derived from cwd in SessionStart hook
 2. **Correlation IDs** - UUID-based request/response matching via pending files
-3. **Config reloaded per request** - Fresh peer discovery without daemon restart
-4. **Backend validation** - Claudemux requires `tmux_session`, OpenCode requires `opencode_url`
-5. **HTTP hooks** - Stop hook sends responses via HTTP POST to daemon's `/hook/response` endpoint
+3. **In-memory peer registry** - Backed by SessionMapper persistence, no per-request config reload
+4. **Peer validation** - WebSocket connect validates display_name and circle format
+5. **File-based response handoff** - Stop hook writes response files; WebSocket hook forwards them
 6. **Peer metadata** - Includes git branch info, auto-populated by SessionStart hook
 7. **Context injection** - SessionStart hook outputs `additionalContext` with peer list for Claude
 
@@ -301,8 +321,8 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 
 Use the `/integration-test` skill for end-to-end testing. It supports three modes:
 
-- **claudemux**: Test Claude Code sessions via tmux hooks
+- **claude-code**: Test Claude Code sessions via tmux hooks
 - **opencode**: Test OpenCode sessions via WebSocket plugin
-- **mixed**: Test cross-backend communication (Claude Code ↔ OpenCode)
+- **mixed**: Test cross-agent-type communication (Claude Code ↔ OpenCode)
 
 The skill guides you through environment discovery, pre-test teardown, test execution, and final cleanup.

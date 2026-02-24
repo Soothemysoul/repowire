@@ -28,6 +28,7 @@ dependencies = [
     "httpx>=0.26.0",
     "libtmux>=0.37.0",
     "textual>=0.47.0",
+    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]
@@ -79,7 +80,7 @@ select = ["E", "F", "I", "N", "W", "UP"]
 
 [tool.ruff.lint.per-file-ignores]
 # TypeScript plugin code embedded as string has long lines
-"repowire/backends/opencode/installer.py" = ["E501"]
+"repowire/installers/opencode.py" = ["E501"]
 
 [tool.ty.rules]
 # Suppress ty false positives (ty is pre-release)

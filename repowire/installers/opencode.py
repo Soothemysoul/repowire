@@ -33,23 +33,21 @@ interface PeerInfo {
 
 // Configuration
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL || "http://127.0.0.1:8377"
-const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws/plugin"
+const DAEMON_WS_URL = process.env.REPOWIRE_DAEMON_WS_URL || "ws://127.0.0.1:8377/ws"
+const AUTH_TOKEN = process.env.REPOWIRE_AUTH_TOKEN || ""  // Optional auth token
 
 // State
 let ws: WebSocket | null = null
 let peerName: string = "unknown"
+let peerId: string | null = null  // Daemon-assigned unique ID
 let projectPath: string = ""
 let activeSessionId: string | null = null
 let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 let reconnectAttempts: number = 0
 let opencodeClient: PluginClient | null = null
 
-// Pane identity (for tmux integration)
-const paneId = process.env.TMUX_PANE
-if (!paneId) {
-  console.error("[repowire] OpenCode must run inside tmux for pane identity")
-  // Still continue but with fallback identity
-}
+// Note: We no longer rely on TMUX_PANE for identity. The daemon assigns
+// a unique peer_id (repow-{circle}-{uuid8}) on registration.
 
 // HTTP helpers for daemon
 async function daemon(path: string, body?: object) {
@@ -70,15 +68,44 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     reconnectAttempts = 0  // Reset on successful connection
-    ws?.send(JSON.stringify({
-      type: "register",
-      pane_id: paneId || `opencode:${peerName}`,  // fallback if not in tmux
-      peer_name: peerName,  // Keep for backward compat
+    // Send connect message - daemon assigns session_id and registers peer
+    // Derive circle from tmux session name (like Claude Code hooks do)
+    let circle = "default"
+    let tmuxSession: string | undefined
+    const tmuxPane = process.env.TMUX_PANE
+    if (process.env.TMUX && tmuxPane) {
+      try {
+        const { execFileSync } = require("child_process")
+        // Use -t to target our specific pane, not the most recently active session
+        const session = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#S"], { encoding: "utf-8" }).trim()
+        const window = execFileSync("tmux", ["display-message", "-t", tmuxPane, "-p", "#W"], { encoding: "utf-8" }).trim()
+        if (session) {
+          circle = session
+          if (window) {
+            tmuxSession = `${session}:${window}`
+          }
+        }
+      } catch (e) {
+        console.warn("[repowire] Failed to derive circle from tmux:", e)
+      }
+    }
+
+    const connectMsg: Record<string, unknown> = {
+      type: "connect",
       display_name: peerName,
-      path: projectPath,
+      circle,
       backend: "opencode",
-      metadata: { branch: process.env.GIT_BRANCH || "unknown" }
-    }))
+      path: projectPath,
+    }
+
+    if (tmuxSession) {
+      connectMsg.tmux_session = tmuxSession
+    }
+
+    if (AUTH_TOKEN) {
+      connectMsg.auth_token = AUTH_TOKEN
+    }
+    ws?.send(JSON.stringify(connectMsg))
   }
 
   ws.onmessage = async (event) => {
@@ -100,9 +127,15 @@ function connectWebSocket() {
   }
 }
 
+const MAX_RECONNECT_ATTEMPTS = 50
+
 function scheduleReconnect() {
   if (reconnectTimeout) clearTimeout(reconnectTimeout)
   reconnectAttempts++
+  if (reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+    console.error(`[repowire] Exhausted ${MAX_RECONNECT_ATTEMPTS} reconnect attempts, giving up`)
+    return
+  }
   // Exponential backoff: 3s, 6s, 12s, 24s, max 60s
   const delay = Math.min(3000 * Math.pow(2, reconnectAttempts - 1), 60000)
   reconnectTimeout = setTimeout(() => {
@@ -113,24 +146,26 @@ function scheduleReconnect() {
 function sendStatus(status: "busy" | "idle" | "offline") {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "status", status }))
+  } else {
+    console.warn(`[repowire] Cannot send status '${status}': WebSocket not open`)
   }
 }
 
-function sendSession(sessionId: string) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "session", session_id: sessionId }))
-  }
-}
+// Session tracking is now handled internally, no need to send to daemon
 
 function sendResponse(correlationId: string, text: string) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "response", correlation_id: correlationId, text }))
+  } else {
+    console.warn(`[repowire] Cannot send response for ${correlationId}: WebSocket not open`)
   }
 }
 
 function sendError(correlationId: string, error: string) {
   if (ws?.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "error", correlation_id: correlationId, error }))
+  } else {
+    console.warn(`[repowire] Cannot send error for ${correlationId}: WebSocket not open`)
   }
 }
 
@@ -138,7 +173,12 @@ function sendError(correlationId: string, error: string) {
 async function handleDaemonMessage(data: Record<string, unknown>) {
   const msgType = data.type as string
 
-  if (msgType === "registered") {
+  if (msgType === "connected") {
+    // Store daemon-assigned session_id as peer_id
+    if (data.session_id) {
+      peerId = data.session_id as string
+      console.debug(`[repowire] Connected with session_id: ${peerId}`)
+    }
     sendStatus("idle")
   } else if (msgType === "query") {
     const correlationId = data.correlation_id as string
@@ -147,11 +187,18 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
     await handleIncomingQuery(correlationId, fromPeer, text)
   } else if (msgType === "notify" || msgType === "broadcast") {
     const text = data.text as string
-    // Fire-and-forget - inject if we have a session
-    if (activeSessionId && opencodeClient) {
+    // Try to resolve session (like we do for queries)
+    const sessionId = await resolveSessionId()
+    if (!sessionId) {
+      console.error(`[repowire] Cannot inject ${msgType}: no active session`)
+      return
+    }
+
+    // Fire-and-forget - inject notification/broadcast
+    if (opencodeClient) {
       try {
         await opencodeClient.session.prompt({
-          path: { id: activeSessionId },
+          path: { id: sessionId },
           body: { parts: [{ type: "text", text }] }
         })
       } catch (e) {
@@ -161,41 +208,113 @@ async function handleDaemonMessage(data: Record<string, unknown>) {
   }
 }
 
-// Handle incoming query - inject into session and return response
+// Resolve active session - try tracked ID, then list, then create
+async function resolveSessionId(): Promise<string | null> {
+  if (activeSessionId) return activeSessionId
+  if (!opencodeClient) return null
+
+  // Try listing existing sessions
+  try {
+    const result = await opencodeClient.session.list()
+    const sessions = result?.data
+    if (Array.isArray(sessions) && sessions.length > 0) {
+      activeSessionId = sessions[sessions.length - 1].id
+      return activeSessionId
+    }
+  } catch (e) {
+    console.warn("[repowire] Failed to list sessions:", e)
+  }
+
+  // Create a new session as last resort
+  try {
+    const result = await opencodeClient.session.create({ body: {} })
+    if (result?.data?.id) {
+      activeSessionId = result.data.id
+      return activeSessionId
+    }
+  } catch (e) {
+    console.warn("[repowire] Failed to create session:", e)
+  }
+
+  return null
+}
+
+// Handle incoming query - use sync prompt then poll for completed response
 async function handleIncomingQuery(correlationId: string, fromPeer: string, text: string) {
-  if (!activeSessionId) {
-    sendError(correlationId, "No active session - please start a conversation in OpenCode first")
+  if (!opencodeClient) {
+    sendError(correlationId, "OpenCode client not available")
     return
   }
 
-  if (!opencodeClient) {
-    sendError(correlationId, "OpenCode client not available")
+  const sessionId = await resolveSessionId()
+  if (!sessionId) {
+    sendError(correlationId, "Could not resolve or create OpenCode session")
     return
   }
 
   sendStatus("busy")
 
   try {
-    // Use the OpenCode SDK client to inject the prompt
+    // session.prompt() fires the query. It returns immediately with the
+    // message skeleton (0 parts), but the model IS processing.
+    // Use session's default model (don't override)
     const result = await opencodeClient.session.prompt({
-      path: { id: activeSessionId },
-      body: {
-        parts: [{ type: "text", text }]
-      }
+      path: { id: sessionId },
+      body: { parts: [{ type: "text", text }] }
     })
 
-    // Extract text from response
-    let responseText = ""
-    const data = result?.data
-    if (data?.parts) {
-      for (const part of data.parts) {
-        if (part.type === "text" && part.text) {
-          responseText += part.text
-        }
+    // Get the message ID from the response
+    const messageId = result?.data?.info?.id
+    if (!messageId) {
+      sendError(correlationId, "No message ID returned from OpenCode session.prompt()")
+      sendStatus("idle")
+      return
+    }
+
+    // Poll for completion: check the message until parts are populated
+    const maxWait = 120_000  // 120s
+    const pollInterval = 1_000  // 1s (faster polling)
+    const start = Date.now()
+
+    while (Date.now() - start < maxWait) {
+      await new Promise(r => setTimeout(r, pollInterval))
+
+      const msgResult = await opencodeClient.session.message({
+        path: { id: sessionId, messageID: messageId }
+      })
+      const msg = msgResult?.data
+
+      // Try multiple paths for parts (SDK response structure varies)
+      const parts = (msg as any)?.parts || (msg as any)?.info?.parts || []
+
+      let responseText = ""
+      for (const part of parts) {
+        if (part.type === "text" && part.text) responseText += part.text
+      }
+
+      // Check completion status
+      const info = (msg as any)?.info || msg
+      const isCompleted = info?.time?.completed || info?.status === "completed"
+      const hasError = info?.error
+
+      // If we got text, return it immediately
+      if (responseText) {
+        sendResponse(correlationId, responseText)
+        sendStatus("idle")
+        return
+      }
+
+      // If completed or errored WITHOUT text, stop polling
+      if (isCompleted || hasError) {
+        const errorMsg = hasError ? `Model error: ${JSON.stringify(info.error)}` : "(empty response - model completed without output)"
+        sendResponse(correlationId, errorMsg)
+        sendStatus("idle")
+        return
       }
     }
 
-    sendResponse(correlationId, responseText || "(empty response)")
+    // Timeout
+    sendError(correlationId, "Query timed out waiting for OpenCode response")
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e)
     console.error(`[repowire] Query failed: ${errorMsg}`)
@@ -218,9 +337,9 @@ function cleanup() {
   }
 }
 
-// Sanitize peer name to match daemon validation (alphanumeric, underscore, hyphen)
+// Sanitize peer name to match daemon validation (alphanumeric, dots, underscore, hyphen)
 function sanitizePeerName(name: string): string {
-  return name.replace(/[^a-zA-Z0-9_-]/g, "_") || "unknown"
+  return name.replace(/[^a-zA-Z0-9._-]/g, "_") || "unknown"
 }
 
 // Main plugin export
@@ -300,7 +419,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         async execute() {
           return JSON.stringify({
             name: peerName,
-            pane_id: paneId || `opencode:${peerName}`,
+            peer_id: peerId || "(not yet registered)",
             path: projectPath,
             activeSession: activeSessionId,
             daemonUrl: DAEMON_URL,
@@ -308,7 +427,7 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         },
       }),
       set_circle: tool({
-        description: "Join a named circle to communicate with peers in that circle. Use this to communicate with peers from different backends (e.g., Claude Code sessions in tmux).",
+        description: "Join a named circle to communicate with peers in that circle. Use this to communicate with peers in different circles (e.g., Claude Code sessions in tmux).",
         args: {
           circle: tool.schema.string().describe("Circle name to join (e.g., 'dev', 'frontend')"),
         },
@@ -328,14 +447,12 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
         const info = typedEvent.properties?.info as SessionEventInfo | undefined
         if (info?.id) {
           activeSessionId = info.id
-          sendSession(activeSessionId)
         }
       } else if (typedEvent.type === "message.updated") {
         const info = typedEvent.properties?.info as MessageEventInfo | undefined
         if (info?.role === "assistant" && info?.sessionID) {
           if (info.sessionID !== activeSessionId) {
             activeSessionId = info.sessionID
-            sendSession(activeSessionId)
           }
           sendStatus("busy")
         }
@@ -383,7 +500,7 @@ Peer list may be outdated - use list_peers tool to refresh.`)
 """
 
 # Plugin file locations
-GLOBAL_PLUGIN_DIR = Path.home() / ".config" / "opencode" / "plugin"
+GLOBAL_PLUGIN_DIR = Path.home() / ".opencode" / "plugin"
 LOCAL_PLUGIN_DIR = Path(".opencode") / "plugin"
 PLUGIN_FILENAME = "repowire.ts"
 
@@ -415,16 +532,17 @@ def uninstall_plugin(global_install: bool = True) -> bool:
     """Uninstall the OpenCode plugin.
 
     Args:
-        global_install: If True, uninstall from ~/.config/opencode/plugin/
+        global_install: If True, uninstall from ~/.opencode/plugin/
                        If False, uninstall from .opencode/plugin/
 
     Returns:
-        True if uninstallation successful
+        True if plugin was removed, False if it wasn't installed
     """
     plugin_path = _get_plugin_path(global_install)
     if plugin_path.exists():
         plugin_path.unlink()
-    return True
+        return True
+    return False
 
 
 def check_plugin_installed(global_install: bool = True) -> bool:

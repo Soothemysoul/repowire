@@ -8,9 +8,14 @@ from typing import TypedDict
 
 
 class TmuxInfo(TypedDict):
-    """Tmux environment information."""
+    """Tmux environment information.
 
-    pane_id: str | None
+    The pane_id is the raw tmux pane ID (e.g., "%42"). It is used as a
+    filename stem for .sid, .pid, correlation, and response cache files.
+    The canonical peer_id is assigned by SessionMapper at WebSocket connect.
+    """
+
+    pane_id: str | None  # tmux pane ID, used as filename stem for hook files
     session_name: str | None
     window_name: str | None
 
@@ -18,7 +23,8 @@ class TmuxInfo(TypedDict):
 def get_pane_id() -> str | None:
     """Get the current tmux pane ID from environment.
 
-    Returns the pane ID (e.g., "%42") or None if not in tmux.
+    Returns the tmux pane ID (e.g., "%42") or None if not in tmux.
+    Used as a filename stem for hook files (.sid, .pid, correlation, response cache).
     """
     return os.environ.get("TMUX_PANE")
 
@@ -46,20 +52,7 @@ def get_tmux_info() -> TmuxInfo:
             parts = result.stdout.strip().split(":", 1)
             if len(parts) == 2:
                 session_name, window_name = parts
-    except Exception:
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
         pass
 
     return {"pane_id": pane_id, "session_name": session_name, "window_name": window_name}
-
-
-def get_tmux_target() -> str | None:
-    """Get current tmux session:window from environment.
-
-    Returns the tmux target in 'session:window' format, or None if not in tmux.
-
-    Note: Kept for backward compatibility. Prefer get_tmux_info() for new code.
-    """
-    info = get_tmux_info()
-    if info["session_name"] and info["window_name"]:
-        return f"{info['session_name']}:{info['window_name']}"
-    return None

@@ -20,7 +20,6 @@ class TestDaemonClient:
             json={
                 "status": "ok",
                 "version": "0.1.0",
-                "backend": "claudemux",
                 "relay_mode": False,
             },
         )
@@ -30,7 +29,7 @@ class TestDaemonClient:
 
         assert health is not None
         assert health.status == "ok"
-        assert health.backend == "claudemux"
+        assert health.relay_mode is False
 
     @pytest.mark.asyncio
     async def test_get_peers_empty(self, httpx_mock) -> None:
@@ -85,26 +84,25 @@ class TestPeerInfo:
     """Tests for PeerInfo dataclass."""
 
     def test_backend_tmux(self) -> None:
-        """Test PeerInfo with claudemux backend."""
+        """Test PeerInfo with claude-code backend."""
         peer = PeerInfo(
-            pane_id="%42",
+            peer_id="%42",
             name="test",
             display_name="test",
             status="online",
             circle="global",
-            backend="claudemux",
+            backend="claude-code",
             path="/tmp",
             tmux_session="0:test",
-            opencode_url=None,
             metadata={},
         )
-        assert peer.backend == "claudemux"
+        assert peer.backend == "claude-code"
         assert peer.tmux_session == "0:test"
 
     def test_backend_opencode(self) -> None:
         """Test PeerInfo with opencode backend."""
         peer = PeerInfo(
-            pane_id="opencode:123",
+            peer_id="opencode:123",
             name="test",
             display_name="test",
             status="online",
@@ -112,27 +110,24 @@ class TestPeerInfo:
             backend="opencode",
             path="/tmp",
             tmux_session=None,
-            opencode_url="http://localhost:4096",
             metadata={},
         )
         assert peer.backend == "opencode"
-        assert peer.opencode_url == "http://localhost:4096"
 
     def test_peerinfo_all_fields(self) -> None:
         """Test PeerInfo with all fields set."""
         peer = PeerInfo(
-            pane_id="%99",
+            peer_id="%99",
             name="myapp",
             display_name="My Application",
             status="busy",
             circle="development",
-            backend="claudemux",
+            backend="claude-code",
             path="/home/user/myapp",
             tmux_session="dev:myapp",
-            opencode_url=None,
             metadata={"branch": "main"},
         )
-        assert peer.pane_id == "%99"
+        assert peer.peer_id == "%99"
         assert peer.name == "myapp"
         assert peer.display_name == "My Application"
         assert peer.status == "busy"
@@ -148,7 +143,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/testproject",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
         )
         assert config.command == ""
 
@@ -157,7 +152,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/testproject",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
             command="claude --model opus",
         )
         assert config.command == "claude --model opus"
@@ -167,7 +162,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/home/user/projects/myapp",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
         )
         assert config.display_name == "myapp"
 
@@ -176,7 +171,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/test",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
         )
         assert config.command == ""
 
@@ -185,7 +180,7 @@ class TestSpawnConfig:
         config = SpawnConfig(
             path="/tmp/test",
             circle="default",
-            backend="claudemux",
+            backend="claude-code",
             command="claude --model opus --verbose",
         )
         assert config.command == "claude --model opus --verbose"
@@ -197,10 +192,8 @@ class TestSpawnResult:
     def test_spawn_result_fields(self) -> None:
         """Test SpawnResult has expected fields."""
         result = SpawnResult(
-            pane_id="%42",
             display_name="myapp",
             tmux_session="default:myapp",
         )
-        assert result.pane_id == "%42"
         assert result.display_name == "myapp"
         assert result.tmux_session == "default:myapp"

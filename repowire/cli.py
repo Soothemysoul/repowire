@@ -9,6 +9,7 @@ from rich.console import Console
 from rich.table import Table
 
 from repowire import __version__
+from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 
 console = Console()
 
@@ -41,42 +42,40 @@ def serve(host: str, port: int, relay: bool) -> None:
 
     app = create_app(relay_mode=relay)
     console.print(f"[cyan]Starting Repowire daemon on {host}:{port}...[/]")
-    console.print("[dim]Per-peer routing enabled[/]")
     if relay:
         console.print("[dim]Relay mode enabled[/]")
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(app, host=host, port=port, ws_ping_interval=None, ws_ping_timeout=None)
 
 
 # =============================================================================
-# setup command - one-time setup with backend option
+# setup command - auto-detects installed agent types
 # =============================================================================
 
 
 @main.command()
-@click.option("--dev", is_flag=True, help="Use dev mode (uv run from current directory)")
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
-def setup(dev: bool, no_service: bool) -> None:
+def setup(no_service: bool) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
     import shutil
 
-    backends_setup: list[str] = []
+    agents_setup: list[str] = []
 
-    # Detect and set up claudemux if claude CLI available
+    # Detect and set up Claude Code if claude CLI available
     if shutil.which("claude"):
-        _setup_claudemux(dev=dev)
-        backends_setup.append("claudemux")
+        _setup_claude_code()
+        agents_setup.append("claude-code")
 
-    # Detect and set up opencode if opencode CLI or config exists
+    # Detect and set up OpenCode if opencode CLI or config exists
     if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
-        _setup_opencode(dev=dev)
-        backends_setup.append("opencode")
+        _setup_opencode()
+        agents_setup.append("opencode")
 
-    if not backends_setup:
-        console.print("[yellow]No backends detected.[/]")
+    if not agents_setup:
+        console.print("[yellow]No agent types detected.[/]")
         console.print("Install 'claude' (Claude Code) or 'opencode' first.")
         return
 
-    console.print(f"[green]✓[/] Configured backends: {', '.join(backends_setup)}")
+    console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
 
     # Install daemon as system service
     if not no_service:
@@ -157,19 +156,19 @@ def uninstall() -> None:
     else:
         console.print("[dim]Daemon service not installed[/]")
 
-    # Uninstall all backend components (try both)
-    _uninstall_claudemux()
+    # Uninstall all agent components (try both)
+    _uninstall_claude_code()
     _uninstall_opencode()
 
     console.print("")
     console.print("[green]Uninstall complete![/]")
 
 
-def _uninstall_claudemux() -> None:
-    """Uninstall claudemux backend components."""
+def _uninstall_claude_code() -> None:
+    """Uninstall Claude Code components."""
     import subprocess
 
-    from repowire.hooks.installer import uninstall_hooks
+    from repowire.installers.claude_code import uninstall_hooks
 
     # Remove hooks
     try:
@@ -192,13 +191,14 @@ def _uninstall_claudemux() -> None:
 
 
 def _uninstall_opencode() -> None:
-    """Uninstall opencode backend components."""
-    from repowire.backends import get_backend
+    """Uninstall OpenCode components."""
+    from repowire.installers.opencode import uninstall_plugin
 
     try:
-        backend = get_backend("opencode")
-        backend.uninstall()
-        console.print("[green]✓[/] OpenCode plugin removed")
+        if uninstall_plugin():
+            console.print("[green]✓[/] OpenCode plugin removed")
+        else:
+            console.print("[dim]OpenCode plugin not installed[/]")
     except Exception as e:
         console.print(f"[yellow]![/] Failed to remove OpenCode plugin: {e}")
 
@@ -210,22 +210,22 @@ def status() -> None:
 
     import httpx
 
-    from repowire.hooks.installer import check_hooks_installed
+    from repowire.installers.claude_code import check_hooks_installed
     from repowire.service.installer import get_platform, get_service_status
 
-    console.print("[cyan]Mode:[/] per-peer routing")
+    console.print("[cyan]Mode:[/] unified WebSocket")
     console.print(f"[cyan]Platform:[/] {get_platform()}")
     console.print("")
 
-    # Check available backends
-    console.print("[cyan]Backends:[/]")
+    # Check available agent types
+    console.print("[cyan]Agent Types:[/]")
     if shutil.which("claude"):
         if check_hooks_installed():
-            console.print("  [green]✓[/] claudemux (hooks installed)")
+            console.print("  [green]✓[/] claude-code (hooks installed)")
         else:
-            console.print("  [yellow]✗[/] claudemux (hooks not installed)")
+            console.print("  [yellow]✗[/] claude-code (hooks not installed)")
     else:
-        console.print("  [dim]✗[/] claudemux (claude CLI not found)")
+        console.print("  [dim]✗[/] claude-code (claude CLI not found)")
 
     if shutil.which("opencode") or (Path.home() / ".config" / "opencode").exists():
         console.print("  [green]✓[/] opencode (available)")
@@ -268,37 +268,29 @@ def status() -> None:
         pass
 
 
-def _setup_claudemux(dev: bool = False) -> None:
-    """Setup for claudemux backend."""
+def _setup_claude_code() -> None:
+    """Setup for Claude Code agent type."""
     import subprocess
 
-    from repowire.hooks.installer import install_hooks
+    from repowire.installers.claude_code import install_hooks
 
-    install_hooks(dev=dev)
+    install_hooks()
     console.print("[green]✓[/] Claude Code hooks installed")
 
     # Remove existing repowire MCP server if present
     subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)
 
-    if dev:
-        # Use 'repowire mcp' directly - relies on uv tool install -e having been run
-        # IMPORTANT: Do NOT use --directory flag as it would override cwd,
-        # preventing the MCP server from identifying which Claude session called it
-        cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "repowire", "mcp"]
-    else:
-        cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "uvx", "repowire", "mcp"]
-
+    cmd = ["claude", "mcp", "add", "-s", "user", "repowire", "--", "repowire", "mcp"]
     subprocess.run(cmd, check=True)
     console.print("[green]✓[/] MCP server added to Claude")
 
 
-def _setup_opencode(dev: bool = False, global_install: bool = True) -> None:
-    """Setup for opencode backend."""
-    from repowire.backends import get_backend
+def _setup_opencode() -> None:
+    """Setup for OpenCode agent type."""
+    from repowire.installers.opencode import install_plugin
 
     try:
-        backend = get_backend("opencode")
-        backend.install(dev=dev, global_install=global_install)
+        install_plugin()
         console.print("[green]✓[/] OpenCode plugin installed")
     except Exception as e:
         console.print(f"[red]Failed to install OpenCode plugin: {e}[/]")
@@ -312,46 +304,57 @@ def mcp() -> None:
     asyncio.run(run_mcp_server())
 
 
+def _launch_tui(host: str, port: int) -> None:
+    """Launch the TUI mesh viewer."""
+    from repowire.tui.app import run_tui
+
+    run_tui(daemon_url=f"http://{host}:{port}")
+
+
+@main.command()
+@click.option("--host", default=DEFAULT_HOST, help="Daemon host")
+@click.option("--port", default=DEFAULT_PORT, type=int, help="Daemon port")
+def mesh(host: str, port: int) -> None:
+    """Launch agent mesh viewer TUI."""
+    _launch_tui(host, port)
+
+
 @main.command()
 @click.option("--host", default=DEFAULT_HOST, help="Daemon host")
 @click.option("--port", default=DEFAULT_PORT, type=int, help="Daemon port")
 def top(host: str, port: int) -> None:
-    """Launch htop-style TUI for managing peers."""
-    from repowire.tui.app import run_tui
-
-    daemon_url = f"http://{host}:{port}"
-    run_tui(daemon_url=daemon_url)
+    """Launch agent mesh viewer TUI (alias for 'mesh')."""
+    _launch_tui(host, port)
 
 
 # =============================================================================
-# claudemux command group - manages Claude Code hooks
+# claude command group - manages Claude Code hooks
 # =============================================================================
 
 
 @main.group(hidden=True)
-def claudemux() -> None:
-    """Manage Claude Code hooks (claudemux backend)."""
+def claude() -> None:
+    """Manage Claude Code hooks."""
     pass
 
 
-@claudemux.command(name="install")
-@click.option("--dev", is_flag=True, help="Use dev mode")
-def claudemux_install(dev: bool) -> None:
+@claude.command(name="install")
+def claude_install() -> None:
     """Install Repowire hooks into Claude Code."""
-    from repowire.hooks.installer import install_hooks
+    from repowire.installers.claude_code import install_hooks
 
     try:
-        install_hooks(dev=dev)
+        install_hooks()
         console.print("[green]Hooks installed successfully![/]")
         console.print("Claude Code will now notify Repowire when responses complete.")
     except Exception as e:
         console.print(f"[red]Failed to install hooks: {e}[/]")
 
 
-@claudemux.command(name="uninstall")
-def claudemux_uninstall() -> None:
+@claude.command(name="uninstall")
+def claude_uninstall() -> None:
     """Remove Repowire hooks from Claude Code."""
-    from repowire.hooks.installer import uninstall_hooks
+    from repowire.installers.claude_code import uninstall_hooks
 
     try:
         uninstall_hooks()
@@ -360,16 +363,16 @@ def claudemux_uninstall() -> None:
         console.print(f"[red]Failed to uninstall hooks: {e}[/]")
 
 
-@claudemux.command(name="status")
-def claudemux_status() -> None:
+@claude.command(name="status")
+def claude_status() -> None:
     """Check if hooks are installed."""
-    from repowire.hooks.installer import check_hooks_installed
+    from repowire.installers.claude_code import check_hooks_installed
 
     if check_hooks_installed():
         console.print("[green]Hooks are installed.[/]")
     else:
         console.print("[yellow]Hooks are not installed.[/]")
-        console.print("Run 'repowire claudemux install' to set up.")
+        console.print("Run 'repowire claude install' to set up.")
 
 
 # =============================================================================
@@ -379,24 +382,20 @@ def claudemux_status() -> None:
 
 @main.group(hidden=True)
 def opencode() -> None:
-    """Manage OpenCode plugin (opencode backend)."""
+    """Manage OpenCode plugin."""
     pass
 
 
 @opencode.command(name="install")
 @click.option("--global", "global_install", is_flag=True, help="Install globally")
-@click.option("--dev", is_flag=True, help="Use dev mode")
-def opencode_install(global_install: bool, dev: bool) -> None:
+def opencode_install(global_install: bool) -> None:
     """Install Repowire plugin for OpenCode."""
-    from repowire.backends import get_backend
+    from repowire.installers.opencode import install_plugin
 
     try:
-        backend = get_backend("opencode")
-        backend.install(dev=dev, global_install=global_install)
+        install_plugin(global_install=global_install)
         scope = "globally" if global_install else "for current project"
         console.print(f"[green]OpenCode plugin installed {scope}![/]")
-    except NotImplementedError:
-        console.print("[yellow]OpenCode backend installer not yet implemented.[/]")
     except Exception as e:
         console.print(f"[red]Failed to install plugin: {e}[/]")
 
@@ -405,15 +404,12 @@ def opencode_install(global_install: bool, dev: bool) -> None:
 @click.option("--global", "global_install", is_flag=True, help="Uninstall globally")
 def opencode_uninstall(global_install: bool) -> None:
     """Remove Repowire plugin from OpenCode."""
-    from repowire.backends import get_backend
+    from repowire.installers.opencode import uninstall_plugin
 
     try:
-        backend = get_backend("opencode")
-        backend.uninstall(global_install=global_install)
+        uninstall_plugin(global_install=global_install)
         scope = "globally" if global_install else "for current project"
         console.print(f"[green]OpenCode plugin uninstalled {scope}.[/]")
-    except NotImplementedError:
-        console.print("[yellow]OpenCode backend uninstaller not yet implemented.[/]")
     except Exception as e:
         console.print(f"[red]Failed to uninstall plugin: {e}[/]")
 
@@ -421,17 +417,14 @@ def opencode_uninstall(global_install: bool) -> None:
 @opencode.command(name="status")
 def opencode_status() -> None:
     """Check if OpenCode plugin is installed."""
-    from repowire.backends import get_backend
+    from repowire.installers.opencode import check_plugin_installed
 
     try:
-        backend = get_backend("opencode")
-        if backend.check_installed():
+        if check_plugin_installed():
             console.print("[green]OpenCode plugin is installed.[/]")
         else:
             console.print("[yellow]OpenCode plugin is not installed.[/]")
             console.print("Run 'repowire opencode install' to set up.")
-    except NotImplementedError:
-        console.print("[yellow]OpenCode backend status check not yet implemented.[/]")
     except Exception as e:
         console.print(f"[red]Error checking status: {e}[/]")
 
@@ -511,7 +504,9 @@ def peer_list() -> None:
 
 @peer.command(name="new")
 @click.argument("path", type=click.Path(exists=True), default=".")
-@click.option("--backend", "-b", type=click.Choice(["claudemux", "opencode"]), default="claudemux")
+@click.option(
+    "--backend", "-b", type=click.Choice(["claude-code", "opencode"]), default="claude-code"
+)
 @click.option("--command", "-c", "cmd", help="Command to run (default: claude or opencode)")
 @click.option("--circle", help="Circle (defaults to 'default')")
 def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> None:  # noqa: ARG001
@@ -525,15 +520,13 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 
         repowire peer new ~/git/api --backend=opencode --circle=backend
     """
-    from typing import cast
-
-    from repowire.config.models import BackendType
+    from repowire.config.models import AgentType
     from repowire.spawn import SpawnConfig, spawn_peer
 
     actual_path = str(Path(path).resolve())
     actual_circle = circle or "default"
-    actual_cmd = cmd or ("claude" if backend == "claudemux" else "opencode")
-    backend_type = cast(BackendType, backend)
+    actual_cmd = cmd or ("claude" if backend == "claude-code" else "opencode")
+    backend_type = AgentType(backend)
 
     config = SpawnConfig(
         path=actual_path,
@@ -550,9 +543,7 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
         )
         console.print(f"  tmux: {result.tmux_session}")
         console.print(f"  command: {actual_cmd}")
-
-        if not result.registered:
-            console.print("[dim]  (daemon not running - will auto-register)[/]")
+        console.print("[dim]  (will auto-register via WebSocket)[/]")
 
     except ValueError as e:
         console.print(f"[red]Error: {e}[/]")
@@ -564,24 +555,19 @@ def peer_new(path: str, backend: str, cmd: str | None, circle: str | None) -> No
 @peer.command(name="register")
 @click.argument("name")
 @click.option("--tmux-session", "-t", help="Tmux session:window (e.g., '0:mywindow')")
-@click.option("--opencode-url", "-u", help="OpenCode server URL")
 @click.option("--circle", "-c", help="Circle (logical subnet)")
 @click.option("--path", "-p", help="Working directory (defaults to current)")
 def peer_register(
     name: str,
     tmux_session: str | None,
-    opencode_url: str | None,
     circle: str | None,
     path: str | None,
 ) -> None:
     """Register a peer for mesh communication."""
     import httpx
 
-    from repowire.config.models import load_config
-
     actual_path = path or str(Path.cwd())
 
-    # Try HTTP API first
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.post(
@@ -590,31 +576,20 @@ def peer_register(
                     "name": name,
                     "path": actual_path,
                     "tmux_session": tmux_session,
-                    "opencode_url": opencode_url,
                     "circle": circle,
                 },
             )
             resp.raise_for_status()
             console.print(f"[green]Registered peer '{name}'[/]")
     except httpx.ConnectError:
-        # Fallback to config if daemon not running
-        config = load_config()
-        config.add_peer(
-            name=name,
-            path=actual_path,
-            tmux_session=tmux_session,
-            opencode_url=opencode_url,
-            circle=circle,
-        )
-        console.print(f"[green]Registered peer '{name}' (daemon not running, saved to config)[/]")
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        return
     except httpx.HTTPStatusError as e:
         console.print(f"[red]Failed to register peer: {e}[/]")
         return
 
     if tmux_session:
         console.print(f"  tmux session: {tmux_session}")
-    if opencode_url:
-        console.print(f"  opencode url: {opencode_url}")
     if circle:
         console.print(f"  circle: {circle}")
     console.print(f"  path: {actual_path}")
@@ -626,9 +601,6 @@ def peer_unregister(name: str) -> None:
     """Unregister a peer from the mesh."""
     import httpx
 
-    from repowire.config.models import load_config
-
-    # Try HTTP API first
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.delete(f"{_get_daemon_url()}/peers/{name}")
@@ -638,14 +610,7 @@ def peer_unregister(name: str) -> None:
             resp.raise_for_status()
             console.print(f"[green]Unregistered peer '{name}'[/]")
     except httpx.ConnectError:
-        # Fallback to config if daemon not running
-        config = load_config()
-        if config.remove_peer(name):
-            console.print(
-                f"[green]Unregistered peer '{name}' (daemon not running, removed from config)[/]"
-            )
-        else:
-            console.print(f"[red]Peer '{name}' not found[/]")
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
     except httpx.HTTPStatusError as e:
         console.print(f"[red]Failed to unregister peer: {e}[/]")
 
@@ -653,20 +618,24 @@ def peer_unregister(name: str) -> None:
 @peer.command(name="ask")
 @click.argument("name")
 @click.argument("query")
-@click.option("--timeout", "-t", default=120, help="Timeout in seconds")
-def peer_ask(name: str, query: str, timeout: int) -> None:
+@click.option("--timeout", "-t", default=DEFAULT_QUERY_TIMEOUT, help="Timeout in seconds")
+@click.option("--circle", "-c", default=None, help="Circle to scope peer lookup")
+def peer_ask(name: str, query: str, timeout: int, circle: str | None) -> None:
     """Ask a peer a question (CLI testing utility)."""
     import httpx
 
     try:
         with httpx.Client(timeout=float(timeout) + 5.0) as client:
+            body: dict = {
+                "to_peer": name,
+                "text": query,
+                "timeout": timeout,
+            }
+            if circle:
+                body["circle"] = circle
             resp = client.post(
                 f"{_get_daemon_url()}/query",
-                json={
-                    "to_peer": name,
-                    "text": query,
-                    "timeout": timeout,
-                },
+                json=body,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -690,21 +659,17 @@ def peer_ask(name: str, query: str, timeout: int) -> None:
 @click.option("--force", "-f", is_flag=True, help="Skip confirmation")
 @click.option("--dry-run", is_flag=True, help="Show what would be removed")
 def peer_prune(force: bool, dry_run: bool) -> None:
-    """Remove offline peers from configuration."""
+    """Remove offline peers from the daemon."""
     import httpx
 
-    from repowire.config.models import load_config
-
-    # Get peers (daemon or config fallback)
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.get(f"{_get_daemon_url()}/peers")
             resp.raise_for_status()
             peers = resp.json().get("peers", [])
     except httpx.RequestError:
-        console.print("[yellow]Daemon not running. Assuming all configured peers are offline.[/]")
-        config = load_config()
-        peers = [{"name": n, "status": "offline"} for n in config.peers.keys()]
+        console.print("[red]Cannot connect to daemon. Run 'repowire serve' first.[/]")
+        return
 
     # Filter offline peers
     offline = [p for p in peers if p.get("status") == "offline"]
@@ -725,37 +690,40 @@ def peer_prune(force: bool, dry_run: bool) -> None:
     if not force and not click.confirm(f"\nRemove {len(offline)} peer(s)?"):
         return
 
-    # Remove
-    config = load_config()
+    # Remove via daemon API
     removed = 0
-    for p in offline:
-        if config.remove_peer(p["name"]):
-            removed += 1
-            console.print(f"[green]✓[/] Removed {p['name']}")
+    with httpx.Client(timeout=5.0) as client:
+        for p in offline:
+            try:
+                resp = client.delete(f"{_get_daemon_url()}/peers/{p['name']}")
+                if resp.status_code < 400:
+                    removed += 1
+                    console.print(f"[green]✓[/] Removed {p['name']}")
+            except httpx.RequestError:
+                console.print(f"[red]Failed to remove {p['name']}[/]")
 
     console.print(f"\n[bold green]Pruned {removed} peer(s)[/]")
 
 
 # =============================================================================
-# hooks command group - backward compatibility alias for claudemux
+# hooks command group - backward compatibility alias for claude
 # =============================================================================
 
 
 @main.group(hidden=True)
 def hooks() -> None:
-    """Manage Claude Code hooks (alias for 'claudemux')."""
+    """Manage Claude Code hooks (alias for 'claude')."""
     pass
 
 
 @hooks.command(name="install")
-@click.option("--dev", is_flag=True, help="Use dev mode")
-def hooks_install(dev: bool) -> None:
+def hooks_install() -> None:
     """Install Repowire hooks into Claude Code."""
-    console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claudemux'[/]")
-    from repowire.hooks.installer import install_hooks
+    console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claude'[/]")
+    from repowire.installers.claude_code import install_hooks
 
     try:
-        install_hooks(dev=dev)
+        install_hooks()
         console.print("[green]Hooks installed successfully![/]")
         console.print("Claude Code will now notify Repowire when responses complete.")
     except Exception as e:
@@ -765,8 +733,8 @@ def hooks_install(dev: bool) -> None:
 @hooks.command(name="uninstall")
 def hooks_uninstall() -> None:
     """Remove Repowire hooks from Claude Code."""
-    console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claudemux'[/]")
-    from repowire.hooks.installer import uninstall_hooks
+    console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claude'[/]")
+    from repowire.installers.claude_code import uninstall_hooks
 
     try:
         uninstall_hooks()
@@ -778,8 +746,8 @@ def hooks_uninstall() -> None:
 @hooks.command(name="status")
 def hooks_status() -> None:
     """Check if hooks are installed."""
-    console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claudemux'[/]")
-    from repowire.hooks.installer import check_hooks_installed
+    console.print("[dim]Note: 'repowire hooks' is an alias for 'repowire claude'[/]")
+    from repowire.installers.claude_code import check_hooks_installed
 
     if check_hooks_installed():
         console.print("[green]Hooks are installed.[/]")
@@ -865,7 +833,6 @@ def daemon_status() -> None:
             resp.raise_for_status()
             data = resp.json()
             console.print("[green]Daemon is running[/]")
-            console.print(f"  Backend: {data.get('backend', 'unknown')}")
             console.print(f"  Relay: {'enabled' if data.get('relay_mode') else 'disabled'}")
     except httpx.ConnectError:
         console.print("[yellow]Daemon is not running.[/]")

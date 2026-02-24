@@ -1,56 +1,29 @@
 #!/usr/bin/env python3
-"""Stop hook handler - captures responses and sends to daemon via HTTP."""
+"""Stop hook handler - captures responses and writes to file for async hook.
+
+This handler is invoked by Claude Code's Stop hook when processing completes.
+It extracts the assistant's response from the transcript and writes it to a file
+that the async WebSocket hook watches and forwards.
+"""
 
 from __future__ import annotations
 
 import json
 import os
 import sys
-import urllib.error
-import urllib.request
 from pathlib import Path
 
-from repowire.hooks._tmux import get_tmux_target
-from repowire.hooks.utils import DAEMON_URL, update_status
+from repowire.hooks._tmux import get_pane_id
+from repowire.hooks.utils import get_session_id, update_status
 from repowire.session.transcript import extract_last_assistant_response
-
-PENDING_DIR = Path.home() / ".repowire" / "pending"
-
-
-def tmux_to_filename(tmux_session: str) -> str:
-    """Convert tmux session:window to safe filename."""
-    return tmux_session.replace(":", "_").replace("/", "_")
-
-
-def send_to_daemon(correlation_id: str, response: str) -> bool:
-    """Send a response to the daemon via HTTP."""
-    try:
-        data = json.dumps(
-            {
-                "correlation_id": correlation_id,
-                "response": response,
-            }
-        ).encode("utf-8")
-
-        req = urllib.request.Request(
-            f"{DAEMON_URL}/hook/response",
-            data=data,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-
-        with urllib.request.urlopen(req, timeout=5.0) as resp:
-            return resp.status == 200
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
-        print(f"repowire: daemon request failed: {e}", file=sys.stderr)
-        return False
 
 
 def main() -> int:
     """Main entry point for stop hook."""
     try:
         input_data = json.loads(sys.stdin.read())
-    except json.JSONDecodeError:
+    except json.JSONDecodeError as e:
+        print(f"repowire stop: invalid JSON input: {e}", file=sys.stderr)
         return 0
 
     # Don't process if already in a hook chain
@@ -59,33 +32,35 @@ def main() -> int:
 
     # Always mark peer as online when Claude finishes processing
     cwd = input_data.get("cwd", os.getcwd())
-    peer_name = Path(cwd).name
-    update_status(peer_name, "online")
+    peer_identifier = get_session_id() or Path(cwd).name
+    if not update_status(peer_identifier, "online"):
+        print(
+            f"repowire stop: failed to update status for {peer_identifier}",
+            file=sys.stderr,
+        )
 
     transcript_path_str = input_data.get("transcript_path")
     if not transcript_path_str:
         return 0
 
-    # Get tmux target from environment - this is stable across session restarts
-    tmux_target = get_tmux_target()
-    if not tmux_target:
+    # Get pane_id from environment
+    pane_id = get_pane_id()
+    if not pane_id:
+        print("repowire stop: TMUX_PANE not set", file=sys.stderr)
         return 0
 
-    # Check if there's a pending query for this tmux pane
-    pending_filename = tmux_to_filename(tmux_target)
-    pending_file = PENDING_DIR / f"{pending_filename}.json"
-    if not pending_file.exists():
-        return 0
+    # Check if there's a correlation_id stored for this pane
+    correlation_dir = Path.home() / ".cache" / "repowire" / "correlations"
+    pane_file = pane_id.replace("%", "")
+    corr_file = correlation_dir / pane_file
+
+    if not corr_file.exists():
+        return 0  # Not a query response
 
     try:
-        with open(pending_file) as f:
-            pending = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return 0
-
-    correlation_id = pending.get("correlation_id")
-    if not correlation_id:
-        pending_file.unlink(missing_ok=True)
+        correlation_id = corr_file.read_text().strip()
+    except OSError as e:
+        print(f"repowire stop: error reading correlation file: {e}", file=sys.stderr)
         return 0
 
     # Extract the response from transcript
@@ -93,12 +68,24 @@ def main() -> int:
     response = extract_last_assistant_response(transcript_path)
 
     if response:
-        success = send_to_daemon(correlation_id, response)
-        if not success:
-            print(f"repowire: failed to deliver response for {correlation_id}", file=sys.stderr)
+        # Write response to file for async hook to forward
+        response_dir = Path.home() / ".cache" / "repowire" / "responses"
+        response_dir.mkdir(parents=True, exist_ok=True)
 
-    # Clean up pending file
-    pending_file.unlink(missing_ok=True)
+        response_file = response_dir / f"{pane_file}.json"
+        tmp_file = response_dir / f"{pane_file}.json.tmp"
+        try:
+            payload = json.dumps({"correlation_id": correlation_id, "response": response})
+            tmp_file.write_text(payload)
+            os.replace(str(tmp_file), str(response_file))
+        except OSError as e:
+            print(
+                f"repowire stop: failed to write response file for {correlation_id[:8]}: {e}",
+                file=sys.stderr,
+            )
+
+    # Clean up correlation file
+    corr_file.unlink(missing_ok=True)
 
     return 0
 

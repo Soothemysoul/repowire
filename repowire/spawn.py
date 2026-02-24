@@ -6,15 +6,16 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
 import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
-from repowire.config.models import BackendType
-from repowire.daemon.deps import get_config
+from repowire.config.models import AgentType
 
-# Default commands for each backend
-BACKEND_COMMANDS: dict[BackendType, str] = {"claudemux": "claude", "opencode": "opencode"}
+# Default commands for each agent type
+AGENT_COMMANDS: dict[AgentType, str] = {
+    AgentType.CLAUDE_CODE: "claude",
+    AgentType.OPENCODE: "opencode",
+}
 
 
 @dataclass
@@ -23,7 +24,7 @@ class SpawnConfig:
 
     path: str
     circle: str
-    backend: BackendType  # "claudemux" or "opencode"
+    backend: AgentType
     command: str = ""  # Full command to run (e.g., "claude --model opus")
 
     @property
@@ -36,23 +37,23 @@ class SpawnConfig:
 class SpawnResult:
     """Result of spawning a peer."""
 
-    pane_id: str  # e.g., "%42"
     display_name: str
     tmux_session: str  # e.g., "circle:name"
-    registered: bool = False  # Whether daemon registration succeeded
 
 
 def spawn_peer(config: SpawnConfig) -> SpawnResult:
-    """Spawn a new peer in a tmux window and register with daemon.
+    """Spawn a new peer in a tmux window.
+
+    Registration happens automatically via WebSocket when the agent starts.
 
     Args:
         config: Spawn configuration
 
     Returns:
-        SpawnResult with pane_id, display_name, tmux_session, and registered status
+        SpawnResult with display_name and tmux_session
 
     Raises:
-        ValueError: If backend is unknown
+        ValueError: If agent type is unknown
         RuntimeError: If tmux operations fail
     """
     server = libtmux.Server()
@@ -74,30 +75,18 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     # Determine command to run
     if config.command:
         cmd = config.command
-    elif config.backend in BACKEND_COMMANDS:
-        cmd = BACKEND_COMMANDS[config.backend]
+    elif config.backend in AGENT_COMMANDS:
+        cmd = AGENT_COMMANDS[config.backend]
     else:
-        raise ValueError(f"Unknown backend: {config.backend}")
+        raise ValueError(f"Unknown agent type: {config.backend}")
 
     pane.send_keys(cmd, enter=True)
 
     tmux_session = f"{config.circle}:{window_name}"
 
-    # Register with daemon
-    registered = _register_with_daemon(
-        pane_id=pane.id or "",
-        display_name=window_name,
-        path=config.path,
-        tmux_session=tmux_session,
-        circle=config.circle,
-        backend=config.backend,
-    )
-
     return SpawnResult(
-        pane_id=pane.id or "",
         display_name=window_name,
         tmux_session=tmux_session,
-        registered=registered,
     )
 
 
@@ -125,46 +114,6 @@ def _unique_window_name(session: libtmux.Session, base_name: str) -> str:
     while f"{base_name}-{i}" in existing_names:
         i += 1
     return f"{base_name}-{i}"
-
-
-def _register_with_daemon(
-    pane_id: str,
-    display_name: str,
-    path: str,
-    tmux_session: str,
-    circle: str,
-    backend: BackendType,
-) -> bool:
-    """Register peer with daemon. Returns True if successful."""
-    import logging
-
-    logger = logging.getLogger(__name__)
-
-    try:
-        cfg = get_config()
-        daemon_url = f"http://{cfg.daemon.host}:{cfg.daemon.port}"
-
-        with httpx.Client(timeout=5.0) as client:
-            resp = client.post(
-                f"{daemon_url}/peers",
-                json={
-                    "pane_id": pane_id,
-                    "display_name": display_name,
-                    "name": display_name,  # Backward compatibility
-                    "path": path,
-                    "tmux_session": tmux_session,
-                    "circle": circle,
-                    "backend": backend,
-                },
-            )
-            resp.raise_for_status()
-        return True
-    except httpx.HTTPStatusError as e:
-        logger.warning(f"Daemon registration failed: {e.response.status_code}")
-        return False
-    except httpx.RequestError as e:
-        logger.warning(f"Daemon not reachable: {e}")
-        return False
 
 
 def attach_session(tmux_session: str) -> None:
