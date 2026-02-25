@@ -361,7 +361,7 @@ async def main() -> int:
 
         except (websockets.exceptions.WebSocketException, OSError) as e:
             attempt += 1
-            delay = min(1 * 2**attempt, 60)
+            delay = min(1 * 2**attempt, 5)
             logger.warning(
                 f"Connection error (attempt {attempt}/{max_attempts}): {e}, retrying in {delay}s..."
             )
