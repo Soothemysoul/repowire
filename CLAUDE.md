@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Releasing
+
+When bumping versions: update `version` in `pyproject.toml`, commit, then tag and push:
+
+```bash
+git tag v0.X.Y
+git push origin main --tags
+```
+
+Always tag the commit that contains the version bump. CI triggers PyPI publish from tags.
+
 ## Build & Development Commands
 
 ```bash
