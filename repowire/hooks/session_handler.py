@@ -12,7 +12,6 @@ import urllib.request
 from pathlib import Path
 
 from repowire.hooks._tmux import get_tmux_info
-from repowire.hooks.utils import get_session_id
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", "http://127.0.0.1:8377")
 
@@ -193,7 +192,7 @@ def main() -> int:
         # agentic loops and tool use cycles, not just at true session end.
         # The websocket_hook's pane liveness checker will detect true exit
         # and terminate, which triggers WebSocket disconnect → daemon marks offline.
-        # 
+        #
         # This prevents spurious OFFLINE status when Claude is still running.
         pass
 
