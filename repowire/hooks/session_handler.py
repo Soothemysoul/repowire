@@ -189,21 +189,13 @@ def main() -> int:
                 print(json.dumps(output))
 
     elif event == "SessionEnd":
-        # Don't kill the ws-hook process here — SessionEnd can fire spuriously
-        # between turns. The ws-hook self-terminates when the pane exits.
-        # Just mark the peer offline for pending query cancellation.
-        peer_identifier = get_session_id() or display_name
-
-        try:
-            req = urllib.request.Request(
-                f"{DAEMON_URL}/peers/{peer_identifier}/offline",
-                method="POST",
-            )
-            urllib.request.urlopen(req, timeout=2.0)
-        except urllib.error.HTTPError as e:
-            print(f"repowire session: daemon error marking offline: {e}", file=sys.stderr)
-        except (urllib.error.URLError, OSError):
-            pass  # Daemon not running - expected
+        # Don't mark peer offline here - SessionEnd fires frequently during
+        # agentic loops and tool use cycles, not just at true session end.
+        # The websocket_hook's pane liveness checker will detect true exit
+        # and terminate, which triggers WebSocket disconnect → daemon marks offline.
+        # 
+        # This prevents spurious OFFLINE status when Claude is still running.
+        pass
 
     return 0
 

@@ -10,6 +10,9 @@ import logging
 import os
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 try:
@@ -51,26 +54,25 @@ def get_display_name_from_cwd() -> str:
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
     """Send keys to a tmux pane via subprocess.
 
-    Uses tmux literal mode (-l) for the text, then explicitly sends the
-    "end bracketed paste" escape sequence (ESC[201~) as raw hex bytes.
-    This prevents the TUI from staying stuck in paste mode when tmux's
-    closing bracket-paste code is dropped, which would swallow the Enter.
+    Implements Gastown's battle-tested NudgeSession pattern:
+    1. Send text in literal mode (bracketed paste)
+    2. 500ms debounce — tested, required for paste to complete
+    3. Escape — exits vim INSERT mode if active, harmless otherwise
+    4. Enter — submits
     """
     try:
-        # Send text as literal characters (triggers bracketed paste)
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "-l", text],
             capture_output=True,
             check=True,
         )
-        # Force-close bracketed paste mode: send \e[201~ as raw hex bytes.
-        # Harmless if paste already closed; essential if closing code was dropped.
+        time.sleep(0.5)
         subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "-H", "1b", "5b", "32", "30", "31", "7e"],
+            ["tmux", "send-keys", "-t", pane_id, "Escape"],
             capture_output=True,
             check=True,
         )
-        # Send Enter to submit
+        time.sleep(0.1)
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "Enter"],
             capture_output=True,
@@ -247,7 +249,23 @@ async def watch_responses(
         await asyncio.sleep(0.1)  # Poll every 100ms
 
 
-async def check_pane_alive(pane_id: str) -> None:
+def _mark_peer_offline_http(display_name: str, daemon_url: str) -> None:
+    """Best-effort HTTP call to mark peer offline before process exits.
+
+    Called by check_pane_alive so the daemon marks the peer offline even if
+    the WebSocket is in a reconnect backoff loop (no active connection to drop).
+    """
+    try:
+        req = urllib.request.Request(
+            f"{daemon_url}/peers/{display_name}/offline",
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=2.0)
+    except Exception:
+        pass  # Best-effort; daemon may be down
+
+
+async def check_pane_alive(pane_id: str, display_name: str, daemon_url: str) -> None:
     """Periodically check if the tmux pane still has an agent running.
 
     Exits the process when the pane is gone or running a bare shell,
@@ -260,9 +278,26 @@ async def check_pane_alive(pane_id: str) -> None:
             consecutive_dead += 1
             if consecutive_dead >= 3:  # 30s of no agent
                 logger.info(f"Pane {pane_id} no longer has an agent, exiting")
+                _mark_peer_offline_http(display_name, daemon_url)
                 os._exit(0)
         else:
             consecutive_dead = 0
+
+
+async def send_heartbeat(websocket, pane_id: str, interval: int = 30) -> None:
+    """Send periodic heartbeat status messages to keep daemon in sync.
+
+    This ensures that if SessionEnd marks peer offline but WebSocket stays
+    connected (e.g., Claude restarted in same pane), the peer is remarked online.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        if _is_pane_safe(pane_id):
+            try:
+                await websocket.send(json.dumps({"type": "status", "status": "online"}))
+            except Exception as e:
+                logger.debug(f"Failed to send heartbeat: {e}")
+                break  # Connection dead, main loop will reconnect
 
 
 async def main() -> int:
@@ -285,12 +320,13 @@ async def main() -> int:
     # Get daemon URL from environment or use default
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
     daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")
+    daemon_url = f"http://{daemon_host}:{daemon_port}"
     uri = f"ws://{daemon_host}:{daemon_port}/ws"
 
     logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")
 
     # Start pane liveness checker (self-terminate when agent exits)
-    asyncio.create_task(check_pane_alive(pane_id))
+    asyncio.create_task(check_pane_alive(pane_id, display_name, daemon_url))
 
     # Retry connection loop with exponential backoff
     max_attempts = 50
@@ -337,6 +373,11 @@ async def main() -> int:
                     watch_responses(websocket, response_dir, pane_id)
                 )
 
+                # Start heartbeat task to keep daemon status in sync
+                heartbeat_task = asyncio.create_task(
+                    send_heartbeat(websocket, pane_id, interval=30)
+                )
+
                 try:
                     # Message loop
                     async for message in websocket:
@@ -344,6 +385,7 @@ async def main() -> int:
                         await handle_message(data, pane_id, websocket)
                 finally:
                     watcher_task.cancel()
+                    heartbeat_task.cancel()
                     try:
                         close_code = websocket.close_code
                         close_reason = websocket.close_reason

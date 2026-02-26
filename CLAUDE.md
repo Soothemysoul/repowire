@@ -200,23 +200,27 @@ Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 - **Stop** → `repowire hook stop` → Extracts response from transcript, marks peer ONLINE
 - **Notification** (idle_prompt) → `repowire hook notification` → Marks peer ONLINE after 60s idle (handles interrupt)
 
-**Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, SessionEnd→OFFLINE)
+**Peer State Machine:** `OFFLINE → ONLINE ↔ BUSY` (SessionStart→ONLINE, UserPromptSubmit→BUSY, Stop/Notification→ONLINE, ws-hook exit→OFFLINE)
 
 **WebSocket Hook Lifecycle:**
 - SessionStart spawns a `websocket_hook.py` background process (skips if one is already alive for the pane)
-- SessionEnd marks peer offline but does NOT kill the ws-hook (SessionEnd fires spuriously between turns)
+- SessionEnd does nothing — fires spuriously between turns, so marking offline here would cancel valid in-flight queries
 - The ws-hook self-terminates via a pane liveness checker when the agent exits (~30s after pane goes idle)
+- On true exit: ws-hook calls `POST /peers/{name}/offline` (cancels pending queries) then `os._exit(0)` → WebSocket disconnect also marks peer OFFLINE in daemon
 
-**Tmux Text Injection Pattern:**
+**Tmux Text Injection Pattern (Gastown NudgeSession):**
 
-`tmux send-keys -l` triggers bracketed paste mode — tmux wraps text in `\e[200~...\e[201~`. If the closing sequence is dropped, the TUI stays in paste mode and swallows Enter. The fix is to always send the end-paste sequence explicitly after literal text:
+`tmux send-keys -l` triggers bracketed paste but does NOT send the closing `ESC[201~`. The TUI stays in paste mode and swallows subsequent keystrokes including Enter. The fix (validated empirically, matches Gastown's battle-tested NudgeSession implementation) is a 500ms debounce, then Escape (exits vim INSERT mode, harmless otherwise), then Enter:
 
 ```python
 # 1. Send text literally (triggers bracketed paste)
 subprocess.run(["tmux", "send-keys", "-t", pane_id, "-l", text])
-# 2. Force-close bracketed paste: send ESC[201~ as raw hex
-subprocess.run(["tmux", "send-keys", "-t", pane_id, "-H", "1b", "5b", "32", "30", "31", "7e"])
-# 3. Send Enter to submit
+# 2. 500ms debounce — tested, required for paste to complete
+time.sleep(0.5)
+# 3. Escape — exits vim INSERT mode if active, harmless otherwise
+subprocess.run(["tmux", "send-keys", "-t", pane_id, "Escape"])
+time.sleep(0.1)
+# 4. Enter to submit
 subprocess.run(["tmux", "send-keys", "-t", pane_id, "Enter"])
 ```
 
