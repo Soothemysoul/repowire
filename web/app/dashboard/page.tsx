@@ -1,53 +1,15 @@
 "use client";
 
-import React, { useState, useEffect, useCallback, useMemo } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { RefreshCw, Wifi, WifiOff } from "lucide-react";
-import { CircleGroup } from "./components/CircleGroup";
+import { cn } from "./lib/utils";
+import { Sidebar } from "./components/Sidebar";
+import { OverviewGrid } from "./components/OverviewGrid";
+import { PeerHeader } from "./components/PeerHeader";
+import { ChatPanel } from "./components/ChatPanel";
+import { ComposeBar } from "./components/ComposeBar";
 import { ActivityFeed } from "./components/ActivityFeed";
-import { clsx, type ClassValue } from "clsx";
-import { twMerge } from "tailwind-merge";
-
-function cn(...inputs: ClassValue[]) {
-  return twMerge(clsx(inputs));
-}
-
-interface Peer {
-  name: string;
-  status: "online" | "busy" | "offline";
-  machine: string;
-  path: string;
-  tmux_session?: string;
-  circle: string;
-  last_seen?: string;
-  metadata?: {
-    branch?: string;
-    [key: string]: unknown;
-  };
-}
-
-interface Event {
-  id: string;
-  type: "query" | "response" | "notification" | "broadcast" | "status_change";
-  timestamp: string;
-  from?: string;
-  to?: string;
-  text: string;
-  status?: "pending" | "success" | "error";
-  peer?: string;
-  new_status?: "online" | "busy" | "offline";
-  query_id?: string;
-  correlation_id?: string;
-}
-
-interface Conversation {
-  id: string;
-  from: string;
-  to: string;
-  query: Event;
-  response?: Event;
-  timestamp: string;
-  status: "pending" | "success" | "error";
-}
+import type { Peer, Event } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://localhost:8377";
 
@@ -56,22 +18,22 @@ export default function Dashboard() {
   const [events, setEvents] = useState<Event[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<"chat" | "activity">("chat");
+  const eventSourceRef = useRef<EventSource | null>(null);
 
-  // Fetch peers via REST
   const fetchPeers = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/peers`);
       if (res.ok) {
         const data = await res.json();
         setPeers(data.peers || data);
-        setIsConnected(true);
       }
     } catch (error) {
       console.error("Failed to fetch peers:", error);
     }
   }, []);
 
-  // Fetch initial events via REST
   const fetchEvents = useCallback(async () => {
     try {
       const res = await fetch(`${API_BASE}/events`);
@@ -84,94 +46,84 @@ export default function Dashboard() {
     }
   }, []);
 
-  // Manual refresh
   const refreshData = useCallback(async () => {
     setIsRefreshing(true);
     await Promise.all([fetchPeers(), fetchEvents()]);
     setIsRefreshing(false);
   }, [fetchPeers, fetchEvents]);
 
-  // SSE for real-time event streaming
   useEffect(() => {
     fetchPeers();
     fetchEvents();
 
     const eventSource = new EventSource(`${API_BASE}/events/stream`);
+    eventSourceRef.current = eventSource;
 
-    eventSource.onopen = () => {
-      setIsConnected(true);
-    };
+    eventSource.onopen = () => setIsConnected(true);
 
     eventSource.onmessage = (e) => {
       try {
-        const event = JSON.parse(e.data);
-        setEvents((prev) => {
-          if (prev.some((existing) => existing.id === event.id)) {
-            return prev;
-          }
-          return [...prev, event];
-        });
+        const parsed: unknown = JSON.parse(e.data);
+        if (
+          typeof parsed === "object" &&
+          parsed !== null &&
+          "id" in parsed &&
+          "type" in parsed &&
+          "timestamp" in parsed &&
+          typeof (parsed as Record<string, unknown>).id === "string" &&
+          typeof (parsed as Record<string, unknown>).type === "string" &&
+          typeof (parsed as Record<string, unknown>).timestamp === "string"
+        ) {
+          const event = parsed as Event;
+          setEvents((prev) => {
+            if (prev.some((existing) => existing.id === event.id)) return prev;
+            return [...prev, event];
+          });
+          // Refresh peers on status changes
+          if (event.type === "status_change") fetchPeers();
+        }
       } catch (error) {
         console.error("Failed to parse SSE event:", error);
       }
     };
 
-    eventSource.onerror = () => {
-      setIsConnected(false);
-    };
+    eventSource.onerror = () => setIsConnected(false);
 
     const peersInterval = setInterval(fetchPeers, 10000);
 
     return () => {
       eventSource.close();
+      eventSourceRef.current = null;
       clearInterval(peersInterval);
     };
   }, [fetchPeers, fetchEvents]);
 
-  // Group events into conversations
-  const conversations: Conversation[] = useMemo(() => {
-    const convos: Conversation[] = [];
-    const queryEvents = events.filter((e) => e.type === "query");
-    const responseEvents = events.filter((e) => e.type === "response");
+  const onlineCount = useMemo(
+    () => peers.filter((p) => p.status === "online" || p.status === "busy").length,
+    [peers]
+  );
 
-    for (const query of queryEvents) {
-      const response = responseEvents.find((r) => r.correlation_id === query.id);
+  // Resolve selected peer from current data (keeps it fresh as status updates come in)
+  const selectedPeer = useMemo(
+    () => (selectedPeerId ? peers.find((p) => p.peer_id === selectedPeerId) ?? null : null),
+    [peers, selectedPeerId]
+  );
 
-      convos.push({
-        id: query.id,
-        from: query.from || "unknown",
-        to: query.to || "unknown",
-        query,
-        response,
-        timestamp: query.timestamp,
-        status: query.status === "error" ? "error" : response ? "success" : "pending",
-      });
-    }
+  const handleSelectPeer = useCallback((peer: Peer) => {
+    setSelectedPeerId(peer.peer_id);
+    setActiveTab("chat");
+  }, []);
 
-    return convos.sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    );
-  }, [events]);
-
-  // Filter to online/busy peers only, group by circle
-  const circleGroups = useMemo(() => {
-    const onlinePeers = peers.filter((p) => p.status === "online" || p.status === "busy");
-    return onlinePeers.reduce((acc, peer) => {
-      const circle = peer.circle || "global";
-      if (!acc[circle]) acc[circle] = [];
-      acc[circle].push(peer);
-      return acc;
-    }, {} as Record<string, Peer[]>);
-  }, [peers]);
-
-  const onlineCount = peers.filter((p) => p.status === "online" || p.status === "busy").length;
+  const handleClosePeer = useCallback(() => {
+    setSelectedPeerId(null);
+  }, []);
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-400 font-sans p-6">
+    <div className="h-screen bg-zinc-950 text-zinc-400 font-sans flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="flex items-center justify-between mb-8">
+      <header className="flex items-center justify-between px-6 py-3 border-b border-zinc-800 shrink-0">
         <div className="flex items-center gap-3">
-          <img src="/logo-dark.webp" alt="Repowire" className="w-8 h-8 rounded-lg" />
+          <img src="/logo-dark.webp" alt="Repowire" className="w-7 h-7 rounded-lg" />
           <span className="text-white font-bold tracking-tight text-lg">REPOWIRE</span>
         </div>
 
@@ -183,7 +135,9 @@ export default function Dashboard() {
             )}
           >
             {isConnected ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-            <span className="tabular-nums">{onlineCount} peers online</span>
+            <span>{isConnected ? "Connected" : "Disconnected"}</span>
+            <span className="text-zinc-600">·</span>
+            <span className="tabular-nums">{onlineCount} online</span>
           </div>
           <button
             onClick={refreshData}
@@ -194,37 +148,71 @@ export default function Dashboard() {
         </div>
       </header>
 
-      {/* Peer Circles - horizontal flex with wrap */}
-      <section className="mb-8">
-        {Object.keys(circleGroups).length === 0 ? (
-          <div className="border border-zinc-800 rounded-lg p-8 text-center">
-            <p className="text-zinc-500 text-sm">No online peers</p>
-            <p className="text-zinc-600 text-xs mt-1">
-              Start Claude sessions in tmux to see peers here
-            </p>
-          </div>
-        ) : (
-          <div className="flex flex-wrap gap-4">
-            {Object.entries(circleGroups).map(([circle, circlePeers]) => (
-              <CircleGroup key={circle} name={circle} peers={circlePeers} />
-            ))}
-          </div>
-        )}
-      </section>
+      {/* Body: sidebar + main panel */}
+      <div className="flex flex-1 overflow-hidden">
+        <Sidebar
+          peers={peers}
+          selectedPeerId={selectedPeerId}
+          onSelectPeer={handleSelectPeer}
+        />
 
-      {/* Conversations - with subtle background differentiation */}
-      <section className="bg-zinc-900/40 rounded-xl p-4 border border-zinc-800/50">
-        <div className="flex items-center justify-between mb-4">
-          <span className="text-xs font-mono text-zinc-500 uppercase tracking-wider">Conversations</span>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-            <span className="text-xs text-zinc-600">live</span>
-          </div>
-        </div>
-        <div className="max-h-[500px] overflow-y-auto">
-          <ActivityFeed events={events} conversations={conversations} />
-        </div>
-      </section>
+        {/* Main panel */}
+        <main className="flex-1 flex flex-col overflow-hidden">
+          {selectedPeer ? (
+            /* State B: Peer Detail */
+            <>
+              <PeerHeader peer={selectedPeer} onClose={handleClosePeer} />
+
+              {/* Tabs */}
+              <div className="flex items-center gap-1 px-4 pt-2 pb-0 border-b border-zinc-800 shrink-0">
+                {(["chat", "activity"] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    onClick={() => setActiveTab(tab)}
+                    className={cn(
+                      "px-3 py-2 text-xs font-medium rounded-t-md transition-colors border-b-2 -mb-px capitalize",
+                      activeTab === tab
+                        ? "border-zinc-400 text-zinc-200"
+                        : "border-transparent text-zinc-500 hover:text-zinc-400"
+                    )}
+                  >
+                    {tab}
+                  </button>
+                ))}
+                {isConnected && (
+                  <div className="ml-auto flex items-center gap-2 pb-2">
+                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="text-xs text-zinc-600">live</span>
+                  </div>
+                )}
+              </div>
+
+              {/* Tab content */}
+              {activeTab === "chat" ? (
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  <div className="flex-1 overflow-y-auto">
+                    <ChatPanel peer={selectedPeer} events={events} />
+                  </div>
+                  <ComposeBar peer={selectedPeer} apiBase={API_BASE} />
+                </div>
+              ) : (
+                <div className="flex-1 overflow-y-auto p-4">
+                  <ActivityFeed events={events} peerFilter={selectedPeer.name} />
+                </div>
+              )}
+            </>
+          ) : (
+            /* State A: Overview */
+            <OverviewGrid
+              peers={peers}
+              events={events}
+              apiBase={API_BASE}
+              onSelectPeer={handleSelectPeer}
+              onRefresh={refreshData}
+            />
+          )}
+        </main>
+      </div>
     </div>
   );
 }

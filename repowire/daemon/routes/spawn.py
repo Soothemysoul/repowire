@@ -1,4 +1,9 @@
-"""Spawn endpoints — create and kill agent sessions via tmux."""
+"""Spawn endpoints — create and kill agent sessions via tmux.
+
+TODO(relay): spawn currently relies on local tmux and filesystem path validation.
+When going hosted, add rate limiting, auth enforcement (not just allowlist), and
+consider whether remote spawn should be allowed at all vs. local-only.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +22,29 @@ router = APIRouter(tags=["spawn"])
 # In-memory registry of tmux_sessions spawned by this daemon instance.
 # Only sessions in this set can be killed via /kill.
 _spawned_sessions: set[str] = set()
+
+
+class SpawnConfigResponse(BaseModel):
+    """Spawn configuration for UI discovery."""
+
+    enabled: bool
+    allowed_commands: list[str] = []
+    allowed_paths: list[str] = []
+
+
+@router.get("/spawn/config", response_model=SpawnConfigResponse)
+async def get_spawn_config(
+    _: str | None = Depends(require_auth),
+) -> SpawnConfigResponse:
+    """Return spawn configuration so the UI can offer spawn controls."""
+    cfg = get_config()
+    cmds = cfg.daemon.spawn.allowed_commands
+    paths = cfg.daemon.spawn.allowed_paths
+    return SpawnConfigResponse(
+        enabled=bool(cmds and paths),
+        allowed_commands=cmds,
+        allowed_paths=paths,
+    )
 
 
 class SpawnRequest(BaseModel):

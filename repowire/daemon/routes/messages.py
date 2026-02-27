@@ -1,9 +1,15 @@
-"""Message handling endpoints."""
+"""Message handling endpoints.
+
+TODO(relay): query/notify/broadcast are unauthenticated in local mode.
+When going hosted, enforce auth on all message endpoints and add input
+size limits to prevent abuse. Grep for TODO(relay) to find all sites.
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
@@ -183,6 +189,25 @@ async def update_session(
         )
 
     await peer_manager.update_peer_status(request.peer_name, peer_status)
+    return OkResponse()
+
+
+class ChatTurnRequest(BaseModel):
+    """Request to ingest a chat turn."""
+
+    peer: str
+    role: Literal["user", "assistant"]
+    text: str
+
+
+@router.post("/events/chat", response_model=OkResponse)
+async def ingest_chat_turn(
+    request: ChatTurnRequest,
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Ingest a chat turn from the stop hook for dashboard display."""
+    peer_manager = get_peer_manager()
+    peer_manager.add_event("chat_turn", request.model_dump())
     return OkResponse()
 
 
