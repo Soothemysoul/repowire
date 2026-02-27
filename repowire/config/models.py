@@ -74,6 +74,23 @@ class PeerConfig(BaseModel):
         return f"legacy-{self.name}"
 
 
+class SpawnSettings(BaseModel):
+    """Settings controlling which commands and paths agents are allowed to spawn into.
+
+    Both allowed_commands and allowed_paths must be non-empty for spawn to be enabled.
+    A spawn request must match an entry in each list to proceed.
+    """
+
+    allowed_commands: list[str] = Field(
+        default_factory=list,
+        description="Allowed spawn commands (empty = spawn disabled)",
+    )
+    allowed_paths: list[str] = Field(
+        default_factory=list,
+        description="Allowed root directories for spawned sessions (empty = spawn disabled)",
+    )
+
+
 class DaemonConfig(BaseModel):
     """Configuration for the daemon process."""
 
@@ -89,6 +106,9 @@ class DaemonConfig(BaseModel):
     # Legacy/additional settings
     auto_reconnect: bool = Field(default=True, description="Auto-reconnect on disconnect")
     heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")
+
+    # Spawn settings
+    spawn: SpawnSettings = Field(default_factory=SpawnSettings)
 
 
 class LoggingConfig(BaseModel):

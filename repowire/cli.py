@@ -98,6 +98,13 @@ def setup(no_service: bool) -> None:
         console.print("Run 'repowire serve' to start the daemon manually.")
     else:
         console.print("Daemon is running. Restart your IDE to use Repowire.")
+    console.print("")
+    console.print("[dim]To allow MCP spawn_peer, add to ~/.repowire/config.yaml:[/]")
+    console.print("[dim]  daemon:[/]")
+    console.print("[dim]    spawn:[/]")
+    console.print("[dim]      allowed_commands: [claude]         # exact match[/]")
+    console.print("[dim]      allowed_paths: [~/git, ~/projects] # path must be under one[/]")
+    console.print("[dim]  (both lists must be set; spawn is disabled by default)[/]")
 
 
 @main.command(name="build-ui")
