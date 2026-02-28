@@ -249,15 +249,17 @@ async def watch_responses(
         await asyncio.sleep(0.1)  # Poll every 100ms
 
 
-def _mark_peer_offline_http(display_name: str, daemon_url: str) -> None:
+def _mark_peer_offline_http(identifier: str, daemon_url: str) -> None:
     """Best-effort HTTP call to mark peer offline before process exits.
 
     Called by check_pane_alive so the daemon marks the peer offline even if
     the WebSocket is in a reconnect backoff loop (no active connection to drop).
+
+    identifier: session_id (preferred) or display_name (fallback)
     """
     try:
         req = urllib.request.Request(
-            f"{daemon_url}/peers/{display_name}/offline",
+            f"{daemon_url}/peers/{identifier}/offline",
             method="POST",
         )
         urllib.request.urlopen(req, timeout=2.0)
@@ -278,7 +280,11 @@ async def check_pane_alive(pane_id: str, display_name: str, daemon_url: str) -> 
             consecutive_dead += 1
             if consecutive_dead >= 3:  # 30s of no agent
                 logger.info(f"Pane {pane_id} no longer has an agent, exiting")
-                _mark_peer_offline_http(display_name, daemon_url)
+                # Prefer session_id for unambiguous peer lookup
+                pane_file = pane_id.replace("%", "")
+                sid_file = Path.home() / ".cache" / "repowire" / "hooks" / f"{pane_file}.sid"
+                identifier = sid_file.read_text().strip() if sid_file.exists() else display_name
+                _mark_peer_offline_http(identifier, daemon_url)
                 os._exit(0)
         else:
             consecutive_dead = 0

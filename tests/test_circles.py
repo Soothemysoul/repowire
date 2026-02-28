@@ -160,3 +160,100 @@ class TestCircleAccessControl:
         # "cli" is not registered, so no enforcement
         result = await pm.query("cli", "peer-b", "hello")
         assert result == "mock response"
+
+
+# ---------------------------------------------------------------------------
+# Same-name peers in different circles
+# ---------------------------------------------------------------------------
+
+
+class TestSameNameDifferentCircles:
+    """Tests that query/notify target the correct peer when two peers share a display_name."""
+
+    @staticmethod
+    async def _register(pm: PeerManager, session_id: str, name: str, circle: str) -> None:
+        peer = Peer(
+            peer_id=session_id,
+            display_name=name,
+            path=f"/{name}",
+            machine="localhost",
+            circle=circle,
+        )
+        await pm.register_peer(peer)
+
+    async def test_query_targets_correct_circle(self, mock_message_router, mock_session_mapper):
+        """query(..., circle='teamA') routes to the teamA peer, not teamB."""
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        await pm.query("cli", "myproject", "hello", circle="teamA")
+
+        mock_message_router.send_query.assert_called_once()
+        _, kwargs = mock_message_router.send_query.call_args
+        assert kwargs["to_session_id"] == "sid-a"
+
+    async def test_query_wrong_circle_raises(self, mock_message_router, mock_session_mapper):
+        """query with circle that doesn't exist raises ValueError."""
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+
+        with pytest.raises(ValueError, match="Unknown peer"):
+            await pm.query("cli", "myproject", "hello", circle="teamZ")
+
+    async def test_notify_targets_correct_circle(self, mock_message_router, mock_session_mapper):
+        """notify(..., circle='teamB') routes to the teamB peer."""
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        await pm.notify("cli", "myproject", "hi", circle="teamB")
+
+        mock_message_router.send_notification.assert_called_once()
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-b"
+
+    async def test_notify_no_circle_picks_online_peer(
+        self, mock_message_router, mock_session_mapper
+    ):
+        """notify with no circle falls back to online-first tiebreaking."""
+        from repowire.protocol.peers import PeerStatus
+
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        # Mark sid-a offline so sid-b wins the tiebreak
+        async with pm._lock:
+            pm._peers["sid-a"].status = PeerStatus.OFFLINE
+
+        await pm.notify("cli", "myproject", "hi")
+
+        mock_message_router.send_notification.assert_called_once()
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-b"
+
+    async def test_circle_access_checked_with_resolved_peers(
+        self, mock_message_router, mock_session_mapper
+    ):
+        """Circle check uses resolved Peer objects, not ambiguous display_names."""
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        # sender is in teamA; two "myproject" targets in teamA and teamB
+        await self._register(pm, "sid-sender", "sender", "teamA")
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        # Query teamA target — sender and target are in same circle: should succeed
+        await pm.query("sender", "myproject", "hello", circle="teamA")
+        mock_message_router.send_query.assert_called_once()
+
+    async def test_cross_circle_blocked_with_resolved_peers(
+        self, mock_message_router, mock_session_mapper
+    ):
+        """When target circle differs from sender circle, access is blocked."""
+        pm = PeerManager(Config(), mock_message_router, mock_session_mapper)
+        await self._register(pm, "sid-sender", "sender", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+
+        with pytest.raises(ValueError, match="Circle boundary"):
+            await pm.query("sender", "myproject", "hello", circle="teamB")

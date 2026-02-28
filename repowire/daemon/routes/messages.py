@@ -49,6 +49,7 @@ class NotifyRequest(BaseModel):
     to_peer: str = Field(..., description="Name of the target peer")
     text: str = Field(..., description="Notification text")
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
+    circle: str | None = Field(None, description="Circle to scope target peer lookup")
 
 
 class BroadcastRequest(BaseModel):
@@ -140,6 +141,7 @@ async def notify_peer(
             to_peer=request.to_peer,
             text=request.text,
             bypass_circle=request.bypass_circle,
+            circle=request.circle,
         )
         return OkResponse()
     except ValueError as e:

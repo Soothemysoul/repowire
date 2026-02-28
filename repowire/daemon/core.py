@@ -204,8 +204,10 @@ class PeerManager:
 
             return result
 
-    def _check_circle_access_unlocked(self, from_peer: str, to_peer: str, bypass: bool) -> None:
-        """Check circle access using live peer registry. Must hold lock.
+    def _check_circle_access_by_peers(
+        self, from_obj: Peer | None, to_obj: Peer | None, bypass: bool
+    ) -> None:
+        """Check circle access given already-resolved Peer objects. Must hold lock.
 
         Raises:
             ValueError: If access not allowed
@@ -213,16 +215,13 @@ class PeerManager:
         if bypass:
             return
 
-        from_obj = self._lookup_peer_unlocked(from_peer)
-        to_obj = self._lookup_peer_unlocked(to_peer)
-
         if not from_obj or not to_obj:
             return  # Unknown peer = no enforcement (CLI callers, etc.)
 
         if from_obj.circle != to_obj.circle:
             raise ValueError(
-                f"Circle boundary: {from_peer} ({from_obj.circle}) "
-                f"cannot access {to_peer} ({to_obj.circle})"
+                f"Circle boundary: {from_obj.display_name} ({from_obj.circle}) "
+                f"cannot access {to_obj.display_name} ({to_obj.circle})"
             )
 
     async def query(
@@ -255,7 +254,8 @@ class PeerManager:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            self._check_circle_access_unlocked(from_peer, to_peer, bypass_circle)
+            from_peer_obj = self._lookup_peer_unlocked(from_peer)
+            self._check_circle_access_by_peers(from_peer_obj, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
 
@@ -307,6 +307,7 @@ class PeerManager:
         to_peer: str,
         text: str,
         bypass_circle: bool = False,
+        circle: str | None = None,
     ) -> None:
         """Send a notification to a peer (fire-and-forget).
 
@@ -314,10 +315,11 @@ class PeerManager:
             ValueError: If peer not found or circle boundary violated
         """
         async with self._lock:
-            peer = self._lookup_peer_unlocked(to_peer)
+            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            self._check_circle_access_unlocked(from_peer, to_peer, bypass_circle)
+            from_peer_obj = self._lookup_peer_unlocked(from_peer)
+            self._check_circle_access_by_peers(from_peer_obj, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
 

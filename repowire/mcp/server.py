@@ -51,7 +51,7 @@ def create_mcp_server() -> FastMCP:
         return json.dumps(result.get("peers", []), indent=2)
 
     @mcp.tool()
-    async def ask_peer(peer_name: str, query: str) -> str:
+    async def ask_peer(peer_name: str, query: str, circle: str | None = None) -> str:
         """Ask a peer a question and wait for their response.
 
         For complex questions that may take a long time, consider using
@@ -60,26 +60,27 @@ def create_mcp_server() -> FastMCP:
         Args:
             peer_name: Name of the peer to ask (e.g., "backend", "frontend")
             query: The question or request to send
+            circle: Circle to scope the lookup (optional — required when multiple
+                    peers share the same name in different circles)
 
         Returns:
             The peer's response text
         """
         my_name = _detect_my_peer_name()
-        result = await daemon_request(
-            "POST",
-            "/query",
-            {
-                "from_peer": my_name,
-                "to_peer": peer_name,
-                "text": query,
-            },
-        )
+        body: dict = {
+            "from_peer": my_name,
+            "to_peer": peer_name,
+            "text": query,
+        }
+        if circle is not None:
+            body["circle"] = circle
+        result = await daemon_request("POST", "/query", body)
         if result.get("error"):
             raise Exception(result["error"])
         return result.get("text", "")
 
     @mcp.tool()
-    async def notify_peer(peer_name: str, message: str) -> str:
+    async def notify_peer(peer_name: str, message: str, circle: str | None = None) -> str:
         """Send an async notification to a peer (fire-and-forget).
 
         Use for status updates, announcements, or replying to notifications.
@@ -87,21 +88,22 @@ def create_mcp_server() -> FastMCP:
         Args:
             peer_name: Name of the peer to notify
             message: The notification message
+            circle: Circle to scope the lookup (optional — required when multiple
+                    peers share the same name in different circles)
 
         Returns:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
         """
         my_name = _detect_my_peer_name()
         correlation_id = f"notif-{uuid4().hex[:8]}"
-        await daemon_request(
-            "POST",
-            "/notify",
-            {
-                "from_peer": my_name,
-                "to_peer": peer_name,
-                "text": f"[#{correlation_id}] {message}",
-            },
-        )
+        body: dict = {
+            "from_peer": my_name,
+            "to_peer": peer_name,
+            "text": f"[#{correlation_id}] {message}",
+        }
+        if circle is not None:
+            body["circle"] = circle
+        await daemon_request("POST", "/notify", body)
         return correlation_id
 
     @mcp.tool()
@@ -191,31 +193,6 @@ def create_mcp_server() -> FastMCP:
         """
         await daemon_request("POST", "/kill", {"tmux_session": tmux_session})
         return f"Killed {tmux_session}"
-
-    @mcp.tool()
-    async def set_circle(circle: str) -> str:
-        """Join a named circle to communicate with peers in that circle.
-
-        Use this to communicate with peers in different circles (e.g., OpenCode
-        peers). By default, both Claude Code and OpenCode peers derive their
-        circle from the tmux session name (falling back to "default").
-
-        Args:
-            circle: Circle name to join (e.g., "dev", "global", "frontend")
-
-        Returns:
-            Confirmation message
-        """
-        my_name = _detect_my_peer_name()
-        await daemon_request(
-            "POST",
-            "/peers/circle",
-            {
-                "peer_name": my_name,
-                "circle": circle,
-            },
-        )
-        return f"Joined circle: {circle}"
 
     return mcp
 
