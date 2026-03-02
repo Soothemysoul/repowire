@@ -140,6 +140,20 @@ class SessionMapper:
             return True
         return False
 
+    def update_display_name(self, session_id: str, new_name: str) -> bool:
+        """Update display_name for an existing session.
+
+        Returns:
+            True if session was found and updated, False otherwise.
+        """
+        mapping = self._mappings.get(session_id)
+        if mapping:
+            mapping.display_name = new_name
+            mapping.updated_at = datetime.now(timezone.utc).isoformat()
+            self._save()
+            return True
+        return False
+
     def unregister_session(self, session_id: str) -> bool:
         """Unregister session (remove from persistence)."""
         if session_id in self._mappings:

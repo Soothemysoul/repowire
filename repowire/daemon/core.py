@@ -416,6 +416,29 @@ class PeerManager:
                     circle,
                 )
 
+    async def update_peer_display_name(self, session_id: str, new_name: str) -> bool:
+        """Update a peer's display_name in-place, preserving peer_id.
+
+        Evicts OFFLINE ghosts with the same (display_name, backend). Returns False
+        if a conflicting ONLINE/BUSY peer exists with that name.
+        """
+        async with self._lock:
+            peer = self._peers.get(session_id)
+            if not peer:
+                return False
+            to_evict = []
+            for old_sid, old_peer in self._peers.items():
+                if old_peer.display_name != new_name or old_peer.backend != peer.backend or old_sid == session_id:
+                    continue
+                if old_peer.status == PeerStatus.OFFLINE:
+                    to_evict.append(old_sid)
+                else:
+                    return False
+            for old_sid in to_evict:
+                del self._peers[old_sid]
+            peer.display_name = new_name
+            return True
+
     async def mark_offline(self, identifier: str) -> int:
         """Mark peer offline and cancel pending queries.
 

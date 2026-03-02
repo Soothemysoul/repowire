@@ -371,9 +371,9 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
           const rows = ["peer_id\tname\tproject\tcircle\tstatus\tpath"]
           for (const p of peers) {
             const project = p.metadata?.project || ""
-            rows.push([p.peer_id || "", p.display_name || p.name || "", project, p.circle || "", p.status || "", p.path || ""].join("\t"))
+            rows.push([p.peer_id || "", p.display_name || p.name || "", project, p.circle || "", p.status || "", p.path || ""].join("\\t"))
           }
-          return rows.join("\n")
+          return rows.join("\\n")
         },
       }),
       ask_peer: tool({
@@ -462,7 +462,11 @@ export const RepowirePlugin: Plugin = async ({ client, directory }) => {
             const stableName = sanitizePeerName(info.id.startsWith("ses") ? info.id.slice(3, 11) : info.id.slice(0, 8))
             if (stableName !== peerName) {
               peerName = stableName
-              ws?.close()
+              if (ws?.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: "update_display_name", display_name: stableName }))
+              } else {
+                ws?.close()  // fallback: reconnect will use the new name
+              }
             }
           }
         }

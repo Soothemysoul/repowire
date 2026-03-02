@@ -241,6 +241,18 @@ async def _handle_message(
         else:
             logger.warning(f"set_circle from {session_id} invalid circle format: {new_circle!r}")
 
+    elif msg_type == "update_display_name":
+        new_name = data.get("display_name", "")
+        if new_name and re.match(r"^[a-zA-Z0-9._-]+$", new_name) and len(new_name) <= 64:
+            ok = await peer_manager.update_peer_display_name(session_id, new_name)
+            if ok:
+                session_mapper.update_display_name(session_id, new_name)
+                logger.info(f"display_name updated for {session_id}: {new_name}")
+            else:
+                logger.warning(f"update_display_name from {session_id} rejected: {new_name!r} conflicts with an online peer")
+        else:
+            logger.warning(f"update_display_name from {session_id} invalid name: {new_name!r}")
+
     elif msg_type == "error":
         correlation_id = data.get("correlation_id")
         error = data.get("error", "Unknown error")
