@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 from pathlib import Path
+from urllib.parse import quote
 from uuid import uuid4
 
 import httpx
@@ -63,7 +64,7 @@ async def _get_my_peer_name() -> str:
     pane_id = get_pane_id()
     if pane_id:
         try:
-            result = await daemon_request("GET", f"/peers/by-pane/{pane_id}")
+            result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
             name = result.get("display_name") or result.get("peer_id") or _my_peer_name
             _cached_peer_name = name
             return name
@@ -202,7 +203,7 @@ def create_mcp_server() -> FastMCP:
         pane_id = get_pane_id()
         if pane_id:
             try:
-                result = await daemon_request("GET", f"/peers/by-pane/{pane_id}")
+                result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
                 return _format_peer_tsv(result)
             except Exception:
                 pass  # fall through to fallback
@@ -229,7 +230,7 @@ def create_mcp_server() -> FastMCP:
         name = ""
         if pane_id:
             try:
-                result = await daemon_request("GET", f"/peers/by-pane/{pane_id}")
+                result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
                 name = result.get("display_name") or result.get("name", "")
             except Exception as e:
                 logger.warning("Could not get peer name by pane_id '%s': %s", pane_id, e)
