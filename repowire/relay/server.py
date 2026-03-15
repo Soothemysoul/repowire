@@ -28,7 +28,13 @@ from fastapi import (
     WebSocket,
     WebSocketDisconnect,
 )
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -48,7 +54,7 @@ class RegisterRequest(BaseModel):
 HTTP_TUNNEL_TIMEOUT = 30  # seconds
 
 # Paths that the relay handles directly (not tunneled)
-_RELAY_PATHS = frozenset({"/", "/health", "/auth", "/ws/relay", "/dashboard"})
+_RELAY_PATHS = frozenset({"/", "/health", "/auth", "/ws/relay", "/dashboard", "/events/stream"})
 _RELAY_PREFIXES = ("/api/v1/", "/d/", "/_next/")
 
 # API paths tunneled to the daemon (everything else is static or relay-owned)
@@ -427,6 +433,63 @@ def create_app() -> FastAPI:
     @app.get("/health")
     async def health() -> dict[str, Any]:
         return {"status": "ok", "connected_daemons": len(_connections)}
+
+    # -- SSE bridge (polls daemon /events, streams to browser) --
+
+    @app.get("/events/stream")
+    async def events_stream(
+        request: Request, rw_token: str | None = Cookie(default=None)
+    ) -> StreamingResponse:
+        if not rw_token:
+            raise HTTPException(status_code=401)
+        api_key = validate_api_key(rw_token)
+        if not api_key:
+            raise HTTPException(status_code=401)
+        conn = _get_any_daemon(api_key.user_id)
+        if not conn:
+            raise HTTPException(status_code=502, detail="No daemon connected")
+
+        async def event_generator():
+            last_event_id: str | None = None
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    # Tunnel a simple GET /events to the daemon
+                    req_id = str(uuid4())
+                    loop = asyncio.get_event_loop()
+                    future: asyncio.Future[dict[str, Any]] = loop.create_future()
+                    _http_futures[req_id] = future
+                    await conn.websocket.send_json({
+                        "type": "http_request",
+                        "request_id": req_id,
+                        "method": "GET",
+                        "path": "/events",
+                        "headers": {},
+                        "query_string": "",
+                    })
+                    resp_msg = await asyncio.wait_for(future, timeout=10)
+                    _http_futures.pop(req_id, None)
+
+                    if resp_msg.get("status") == 200:
+                        import json
+
+                        body = base64.b64decode(resp_msg.get("body", ""))
+                        events = json.loads(body)
+                        if last_event_id is None and events:
+                            last_event_id = events[-1].get("id")
+                        else:
+                            for event in events:
+                                eid = event.get("id")
+                                if eid and eid != last_event_id:
+                                    yield f"data: {json.dumps(event)}\n\n"
+                            if events:
+                                last_event_id = events[-1].get("id", last_event_id)
+                except Exception:
+                    _http_futures.pop(req_id, None)
+                await asyncio.sleep(2)
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
 
     # -- Registration --
 

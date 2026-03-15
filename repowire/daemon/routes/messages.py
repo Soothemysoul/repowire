@@ -16,7 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
-from repowire.daemon.auth import require_auth, require_localhost
+from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_manager
 from repowire.daemon.routes._shared import OkResponse
 from repowire.protocol.peers import PeerStatus
@@ -270,12 +270,11 @@ async def get_events(
 
 @router.get("/events/stream")
 async def stream_events(
-    _: None = Depends(require_localhost),
+    _: str | None = Depends(require_auth),
 ) -> StreamingResponse:
     """Stream events via Server-Sent Events (SSE).
 
     Clients connect once and receive events as they occur.
-    Restricted to localhost.
     """
     peer_manager = get_peer_manager()
 

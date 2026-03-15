@@ -195,12 +195,23 @@ class RelayClient:
             }
         )
 
+    # Headers that must not be forwarded to the local daemon — they cause
+    # uvicorn's ProxyHeadersMiddleware to override request.client with the
+    # browser's IP, breaking require_localhost checks.
+    _STRIP_HEADERS = frozenset({
+        "x-forwarded-for", "x-forwarded-proto", "x-forwarded-host",
+        "x-real-ip", "forwarded",
+    })
+
     async def _handle_http_request(self, msg: dict[str, Any]) -> None:
         """Forward tunneled HTTP request to local daemon."""
         request_id = msg["request_id"]
         method = msg.get("method", "GET").upper()
         path = msg.get("path", "/")
-        headers = msg.get("headers", {})
+        headers = {
+            k: v for k, v in msg.get("headers", {}).items()
+            if k.lower() not in self._STRIP_HEADERS
+        }
         query_string = msg.get("query_string", "")
         body_b64 = msg.get("body")
 
