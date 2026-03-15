@@ -122,10 +122,56 @@ function ConversationCard({
   );
 }
 
+function NotificationRow({ event, isExpanded, onToggle }: { event: Event; isExpanded: boolean; onToggle: () => void }) {
+  const isBroadcast = event.type === "broadcast";
+  return (
+    <div className="border border-zinc-800/50 rounded-lg overflow-hidden bg-zinc-800/10">
+      <button
+        onClick={onToggle}
+        className="w-full px-4 py-3 flex items-center gap-3 hover:bg-zinc-800/30 transition-colors"
+      >
+        <div className={cn("transition-transform", isExpanded && "rotate-90")}>
+          <ChevronRight className="w-4 h-4 text-zinc-500" />
+        </div>
+        <div className="flex items-center gap-2 text-sm min-w-0">
+          <span className="font-medium text-zinc-300">@{event.from || "?"}</span>
+          {!isBroadcast && (
+            <>
+              <ChevronRight className="w-3 h-3 text-zinc-600 shrink-0" />
+              <span className="font-medium text-zinc-300">@{event.to || "?"}</span>
+            </>
+          )}
+          <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono shrink-0">
+            {isBroadcast ? "broadcast" : "notify"}
+          </span>
+        </div>
+        <span className="ml-auto text-[10px] text-zinc-600 font-mono tabular-nums shrink-0">
+          {new Date(event.timestamp).toLocaleTimeString()}
+        </span>
+      </button>
+      {!isExpanded && (
+        <div className="px-4 pb-3 pl-11">
+          <p className="text-sm text-zinc-500 truncate">{event.text}</p>
+        </div>
+      )}
+      {isExpanded && (
+        <div className="px-4 pb-4 pl-11">
+          <div className="bg-zinc-950 border border-zinc-800/50 rounded-lg p-3">
+            <div className="text-sm text-zinc-300 prose prose-invert prose-sm max-w-none prose-p:my-1 prose-pre:bg-zinc-900 prose-code:text-emerald-300">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ActivityFeed({ events, peerFilter }: ActivityFeedProps) {
-  const conversations: Conversation[] = useMemo(() => {
+  const { conversations, notifications } = useMemo(() => {
     const responseById = new Map<string, Event>();
     const queryEvents: Event[] = [];
+    const notifEvents: Event[] = [];
 
     for (const e of events) {
       if (e.type === "query") {
@@ -134,10 +180,14 @@ export function ActivityFeed({ events, peerFilter }: ActivityFeedProps) {
         }
       } else if (e.type === "response" && e.correlation_id) {
         responseById.set(e.correlation_id, e);
+      } else if (e.type === "notification" || e.type === "broadcast") {
+        if (!peerFilter || e.from === peerFilter || e.to === peerFilter) {
+          notifEvents.push(e);
+        }
       }
     }
 
-    return queryEvents
+    const conversations = queryEvents
       .map((query) => {
         const response = responseById.get(query.id);
         return {
@@ -149,14 +199,33 @@ export function ActivityFeed({ events, peerFilter }: ActivityFeedProps) {
           timestamp: query.timestamp,
           status: (query.status === "error" ? "error" : response ? "success" : "pending") as Conversation["status"],
         };
-      })
-      .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      });
+
+    return { conversations, notifications: notifEvents };
   }, [events, peerFilter]);
 
-  const [expandedConversations, setExpandedConversations] = useState<Set<string>>(new Set());
+  // Merge and sort all activity by timestamp (newest first)
+  type ActivityItem =
+    | { kind: "conversation"; data: Conversation }
+    | { kind: "notification"; data: Event };
 
-  const toggleConversation = (id: string) => {
-    setExpandedConversations((prev) => {
+  const allActivity: ActivityItem[] = useMemo(() => {
+    const items: ActivityItem[] = [
+      ...conversations.map((c) => ({ kind: "conversation" as const, data: c })),
+      ...notifications.map((n) => ({ kind: "notification" as const, data: n })),
+    ];
+    items.sort((a, b) => {
+      const ta = "timestamp" in a.data ? a.data.timestamp : "";
+      const tb = "timestamp" in b.data ? b.data.timestamp : "";
+      return new Date(tb).getTime() - new Date(ta).getTime();
+    });
+    return items;
+  }, [conversations, notifications]);
+
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(new Set());
+
+  const toggleItem = (id: string) => {
+    setExpandedItems((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -164,27 +233,36 @@ export function ActivityFeed({ events, peerFilter }: ActivityFeedProps) {
     });
   };
 
-  if (conversations.length === 0) {
+  if (allActivity.length === 0) {
     return (
       <div className="text-center py-12 text-zinc-600">
         <p className="text-sm">
-          {peerFilter ? `No queries involving ${peerFilter}` : "No conversations yet"}
+          {peerFilter ? `No activity involving ${peerFilter}` : "No activity yet"}
         </p>
-        <p className="text-xs mt-1">Ask a peer something to get started</p>
+        <p className="text-xs mt-1">Send a message to get started</p>
       </div>
     );
   }
 
   return (
     <div className="space-y-3">
-      {conversations.map((convo) => (
-        <ConversationCard
-          key={convo.id}
-          conversation={convo}
-          isExpanded={expandedConversations.has(convo.id)}
-          onToggle={() => toggleConversation(convo.id)}
-        />
-      ))}
+      {allActivity.map((item) =>
+        item.kind === "conversation" ? (
+          <ConversationCard
+            key={item.data.id}
+            conversation={item.data}
+            isExpanded={expandedItems.has(item.data.id)}
+            onToggle={() => toggleItem(item.data.id)}
+          />
+        ) : (
+          <NotificationRow
+            key={item.data.id}
+            event={item.data}
+            isExpanded={expandedItems.has(item.data.id)}
+            onToggle={() => toggleItem(item.data.id)}
+          />
+        )
+      )}
     </div>
   );
 }
