@@ -8,7 +8,7 @@ import json
 import logging
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
 
@@ -153,6 +153,38 @@ class SessionMapper:
             self._save()
             return True
         return False
+
+    @staticmethod
+    def _is_stale(mapping: SessionMapping, cutoff: datetime) -> bool:
+        if not mapping.updated_at:
+            return True
+        try:
+            return datetime.fromisoformat(mapping.updated_at) < cutoff
+        except ValueError:
+            return True
+
+    def prune_offline(self, max_age_hours: float = 72) -> int:
+        """Remove stale mappings older than max_age_hours.
+
+        Returns:
+            Number of pruned mappings.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+        initial_count = len(self._mappings)
+        self._mappings = {
+            sid: mapping
+            for sid, mapping in self._mappings.items()
+            if not self._is_stale(mapping, cutoff)
+        }
+        pruned_count = initial_count - len(self._mappings)
+
+        if pruned_count > 0:
+            self._save()
+            logger.info(
+                f"Pruned {pruned_count} stale session mappings (>{max_age_hours}h old)"
+            )
+
+        return pruned_count
 
     def unregister_session(self, session_id: str) -> bool:
         """Unregister session (remove from persistence)."""
