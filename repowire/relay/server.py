@@ -57,6 +57,11 @@ _TUNNEL_PREFIXES = (
     "/session", "/response", "/spawn", "/ws",
 )
 
+# Static file extensions served from web/out root (logos, favicon, images)
+_STATIC_EXTENSIONS = frozenset({
+    ".ico", ".webp", ".png", ".jpg", ".jpeg", ".svg", ".gif", ".woff", ".woff2",
+})
+
 
 @dataclass
 class DaemonConnection:
@@ -524,6 +529,14 @@ def create_app() -> FastAPI:
         path: str, request: Request, rw_token: str | None = Cookie(default=None)
     ) -> Response:
         full_path = f"/{path}"
+
+        # Serve static assets from web/out (logos, favicon, images)
+        if web_out:
+            _, ext = os.path.splitext(path)
+            if ext.lower() in _STATIC_EXTENSIONS:
+                file_path = os.path.join(web_out, path)
+                if os.path.isfile(file_path):
+                    return FileResponse(file_path)
 
         # Only tunnel daemon API paths
         if not any(full_path.startswith(p) for p in _TUNNEL_PREFIXES):
