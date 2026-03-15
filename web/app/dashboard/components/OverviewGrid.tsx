@@ -101,10 +101,10 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
                   className="bg-zinc-900/50 border border-zinc-800/50 rounded-lg p-4 text-left hover:border-zinc-700 hover:bg-zinc-900 transition-all group"
                 >
                   {/* Name + status */}
-                  <div className="flex items-center gap-2 mb-2">
+                  <div className="flex items-center gap-2 mb-1">
                     <span className={cn("w-2 h-2 rounded-full", statusDot(peer.status))} />
-                    <span className="text-sm font-medium text-zinc-200 group-hover:text-white transition-colors">
-                      {peer.name}
+                    <span className="text-sm font-medium text-zinc-200 group-hover:text-white transition-colors truncate">
+                      {peer.description || peer.name}
                     </span>
                     <span
                       className={cn(
@@ -117,10 +117,8 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
                       {peer.status}
                     </span>
                   </div>
-
-                  {/* Description */}
                   {peer.description && (
-                    <p className="text-xs text-zinc-400 mb-2 line-clamp-2">{peer.description}</p>
+                    <p className="text-[10px] text-zinc-600 font-mono mb-2">{peer.name}</p>
                   )}
 
                   {/* Details */}
