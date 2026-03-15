@@ -426,7 +426,10 @@ def create_app() -> FastAPI:
         dashboard_path = os.path.join(web_out, "dashboard.html")
         if not os.path.exists(dashboard_path):
             return HTMLResponse("dashboard.html not found", status_code=404)
-        return FileResponse(dashboard_path)
+        return FileResponse(
+            dashboard_path,
+            headers={"cache-control": "no-cache, must-revalidate"},
+        )
 
     # -- Health --
 
