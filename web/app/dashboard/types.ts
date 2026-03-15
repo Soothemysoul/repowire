@@ -9,6 +9,7 @@ export interface Peer {
   backend?: string;
   circle: string;
   last_seen?: string;
+  description?: string;
   metadata?: {
     branch?: string;
     [key: string]: unknown;

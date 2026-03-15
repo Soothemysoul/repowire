@@ -11,24 +11,25 @@ interface PeerHeaderProps {
 
 export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
   return (
-    <div className="flex items-center gap-2 sm:gap-4 px-3 sm:px-4 py-3 border-b border-zinc-800 bg-zinc-950 shrink-0">
-      {/* Name + status */}
-      <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
-        <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", statusDot(peer.status))} />
-        <span className="text-sm sm:text-base font-semibold text-zinc-200 truncate">{peer.name}</span>
-        <span
-          className={cn(
-            "text-[10px] px-2 py-0.5 rounded-full font-medium",
-            peer.status === "online" && "bg-emerald-500/10 text-emerald-400",
-            peer.status === "busy" && "bg-amber-500/10 text-amber-400",
-            peer.status === "offline" && "bg-zinc-700/50 text-zinc-500"
-          )}
-        >
-          {peer.status}
-        </span>
-      </div>
+    <div className="flex flex-col gap-1 px-3 sm:px-4 py-3 border-b border-zinc-800 bg-zinc-950 shrink-0">
+      <div className="flex items-center gap-2 sm:gap-4">
+        {/* Name + status */}
+        <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+          <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", statusDot(peer.status))} />
+          <span className="text-sm sm:text-base font-semibold text-zinc-200 truncate">{peer.name}</span>
+          <span
+            className={cn(
+              "text-[10px] px-2 py-0.5 rounded-full font-medium",
+              peer.status === "online" && "bg-emerald-500/10 text-emerald-400",
+              peer.status === "busy" && "bg-amber-500/10 text-amber-400",
+              peer.status === "offline" && "bg-zinc-700/50 text-zinc-500"
+            )}
+          >
+            {peer.status}
+          </span>
+        </div>
 
-      {/* Metadata chips */}
+        {/* Metadata chips */}
       <div className="hidden sm:flex items-center gap-3 text-xs text-zinc-500 font-mono overflow-hidden">
         <div className="flex items-center gap-1 shrink-0">
           <span className="text-zinc-600">circle:</span>
@@ -60,13 +61,17 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
         )}
       </div>
 
-      {/* Close button */}
-      <button
-        onClick={onClose}
-        className="ml-auto p-1.5 hover:bg-zinc-800 rounded-md transition-colors shrink-0"
-      >
-        <X className="w-4 h-4 text-zinc-500" />
-      </button>
+        {/* Close button */}
+        <button
+          onClick={onClose}
+          className="ml-auto p-1.5 hover:bg-zinc-800 rounded-md transition-colors shrink-0"
+        >
+          <X className="w-4 h-4 text-zinc-500" />
+        </button>
+      </div>
+      {peer.description && (
+        <p className="text-xs text-zinc-500 pl-5 truncate">{peer.description}</p>
+      )}
     </div>
   );
 }

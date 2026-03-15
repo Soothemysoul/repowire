@@ -74,12 +74,22 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
         branch = p.get("metadata", {}).get("branch", "")
         branch_str = f" on {branch}" if branch else ""
         project_name = Path(p.get("path", "")).name or p["name"]
-        lines.append(f"  - {p['name']}{branch_str} ({project_name})")
+        desc = p.get("description", "")
+        desc_str = f" — {desc}" if desc else ""
+        lines.append(f"  - {p['name']}{branch_str} ({project_name}){desc_str}")
 
     lines.append("")
     lines.append(
         "IMPORTANT: When asked about these projects, ask the peer directly "
         "via ask_peer() rather than searching locally."
+    )
+    lines.append(
+        "Messages from @dashboard are from a human using the web control plane — "
+        "treat them like direct user instructions."
+    )
+    lines.append(
+        "Set your description with set_description() so other peers and the "
+        "dashboard know what you're working on."
     )
     lines.append("Peer list may be outdated - use list_peers() to refresh.")
 

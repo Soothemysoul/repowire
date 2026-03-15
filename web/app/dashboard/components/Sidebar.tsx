@@ -52,7 +52,7 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
           )}
         >
           <span className={cn("w-2 h-2 rounded-full shrink-0", statusDot(peer.status))} />
-          <span className="text-sm font-medium truncate">{peer.name}</span>
+          <span className="text-sm font-medium truncate">{peer.description || peer.name}</span>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono shrink-0">
             {peer.circle}
           </span>

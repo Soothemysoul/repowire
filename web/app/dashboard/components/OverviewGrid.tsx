@@ -118,6 +118,11 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
                     </span>
                   </div>
 
+                  {/* Description */}
+                  {peer.description && (
+                    <p className="text-xs text-zinc-400 mb-2 line-clamp-2">{peer.description}</p>
+                  )}
+
                   {/* Details */}
                   <div className="space-y-1 text-xs text-zinc-500 font-mono">
                     <div className="flex items-center gap-2">
