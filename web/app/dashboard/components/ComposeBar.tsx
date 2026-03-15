@@ -74,33 +74,33 @@ export function ComposeBar({ peer, apiBase }: ComposeBarProps) {
   };
 
   return (
-    <div className="border-t border-zinc-800 bg-zinc-950 p-3 flex flex-col gap-2">
+    <div className="border-t border-zinc-800 bg-zinc-950 p-2 sm:p-3 flex flex-col gap-2 shrink-0">
       {/* Controls row */}
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-zinc-500 font-mono">
-          → {peer.name}
-        </span>
-
-        <div className="flex rounded-md overflow-hidden border border-zinc-700">
-          {(["notify", "ask"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={cn(
-                "px-2.5 py-1 text-xs transition-colors",
-                mode === m ? "bg-zinc-700 text-zinc-200" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
-              )}
-            >
-              {m}
-            </button>
-          ))}
+      <div className="flex items-center gap-2 flex-wrap">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-zinc-500 font-mono truncate max-w-[8rem]">
+            → {peer.name}
+          </span>
+          <div className="flex rounded-md overflow-hidden border border-zinc-700">
+            {(["notify", "ask"] as const).map((m) => (
+              <button
+                key={m}
+                onClick={() => setMode(m)}
+                className={cn(
+                  "px-2.5 py-1 text-xs transition-colors",
+                  mode === m ? "bg-zinc-700 text-zinc-200" : "bg-zinc-900 text-zinc-500 hover:text-zinc-300"
+                )}
+              >
+                {m}
+              </button>
+            ))}
+          </div>
         </div>
-
-        <span className="ml-auto text-[10px] text-zinc-600">⌘↵ to send</span>
+        <span className="ml-auto text-[10px] text-zinc-600 hidden sm:inline">⌘↵ to send</span>
       </div>
 
       {/* Textarea + send button */}
-      <div className="flex gap-2 items-end">
+      <div className="flex gap-2 items-end min-w-0">
         <textarea
           ref={textareaRef}
           value={text}
@@ -108,7 +108,7 @@ export function ComposeBar({ peer, apiBase }: ComposeBarProps) {
           onKeyDown={onKeyDown}
           placeholder={mode === "notify" ? "Send a notification..." : "Ask a question..."}
           rows={1}
-          className="flex-1 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:ring-1 focus:ring-zinc-500"
+          className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:ring-1 focus:ring-zinc-500"
         />
         <button
           onClick={submit}

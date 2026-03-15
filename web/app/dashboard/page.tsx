@@ -121,7 +121,7 @@ export default function Dashboard() {
   }, []);
 
   return (
-    <div className="h-screen bg-zinc-950 text-zinc-400 font-sans flex flex-col overflow-hidden">
+    <div className="h-dvh bg-zinc-950 text-zinc-400 font-sans flex flex-col overflow-hidden">
       {/* Header */}
       <header className="flex items-center justify-between px-3 sm:px-6 py-3 border-b border-zinc-800 shrink-0">
         <div className="flex items-center gap-2 sm:gap-3">
@@ -131,8 +131,10 @@ export default function Dashboard() {
           >
             {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
           </button>
-          <img src="/logo-dark.webp" alt="Repowire" className="w-7 h-7 rounded-lg" />
-          <span className="text-white font-bold tracking-tight text-lg hidden sm:inline">REPOWIRE</span>
+          <button onClick={handleClosePeer} className="flex items-center gap-2 sm:gap-3 hover:opacity-80 transition-opacity">
+            <img src="/logo-dark.webp" alt="Repowire" className="w-7 h-7 rounded-lg" />
+            <span className="text-white font-bold tracking-tight text-lg hidden sm:inline">REPOWIRE</span>
+          </button>
         </div>
 
         <div className="flex items-center gap-2 sm:gap-4">
@@ -180,7 +182,7 @@ export default function Dashboard() {
         />
 
         {/* Main panel */}
-        <main className="flex-1 flex flex-col overflow-hidden">
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
           {selectedPeer ? (
             /* State B: Peer Detail */
             <>
