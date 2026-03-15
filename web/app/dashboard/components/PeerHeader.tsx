@@ -11,11 +11,11 @@ interface PeerHeaderProps {
 
 export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
   return (
-    <div className="flex items-center gap-4 px-4 py-3 border-b border-zinc-800 bg-zinc-950 shrink-0">
+    <div className="flex items-center gap-2 sm:gap-4 px-3 sm:px-4 py-3 border-b border-zinc-800 bg-zinc-950 shrink-0">
       {/* Name + status */}
-      <div className="flex items-center gap-2.5">
-        <span className={cn("w-2.5 h-2.5 rounded-full", statusDot(peer.status))} />
-        <span className="text-base font-semibold text-zinc-200">{peer.name}</span>
+      <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+        <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", statusDot(peer.status))} />
+        <span className="text-sm sm:text-base font-semibold text-zinc-200 truncate">{peer.name}</span>
         <span
           className={cn(
             "text-[10px] px-2 py-0.5 rounded-full font-medium",
@@ -29,7 +29,7 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
       </div>
 
       {/* Metadata chips */}
-      <div className="flex items-center gap-3 text-xs text-zinc-500 font-mono overflow-hidden">
+      <div className="hidden sm:flex items-center gap-3 text-xs text-zinc-500 font-mono overflow-hidden">
         <div className="flex items-center gap-1 shrink-0">
           <span className="text-zinc-600">circle:</span>
           <span>{peer.circle}</span>

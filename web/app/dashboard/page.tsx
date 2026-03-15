@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { RefreshCw, Wifi, WifiOff } from "lucide-react";
+import { Menu, RefreshCw, Wifi, WifiOff, X } from "lucide-react";
 import { cn } from "./lib/utils";
 import { Sidebar } from "./components/Sidebar";
 import { OverviewGrid } from "./components/OverviewGrid";
@@ -20,6 +20,7 @@ export default function Dashboard() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [selectedPeerId, setSelectedPeerId] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"chat" | "activity">("chat");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   const fetchPeers = useCallback(async () => {
@@ -112,6 +113,7 @@ export default function Dashboard() {
   const handleSelectPeer = useCallback((peer: Peer) => {
     setSelectedPeerId(peer.peer_id);
     setActiveTab("chat");
+    setMobileMenuOpen(false);
   }, []);
 
   const handleClosePeer = useCallback(() => {
@@ -121,21 +123,27 @@ export default function Dashboard() {
   return (
     <div className="h-screen bg-zinc-950 text-zinc-400 font-sans flex flex-col overflow-hidden">
       {/* Header */}
-      <header className="flex items-center justify-between px-6 py-3 border-b border-zinc-800 shrink-0">
-        <div className="flex items-center gap-3">
+      <header className="flex items-center justify-between px-3 sm:px-6 py-3 border-b border-zinc-800 shrink-0">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            className="md:hidden p-1.5 hover:bg-zinc-800 rounded-md transition-colors"
+          >
+            {mobileMenuOpen ? <X className="w-4 h-4" /> : <Menu className="w-4 h-4" />}
+          </button>
           <img src="/logo-dark.webp" alt="Repowire" className="w-7 h-7 rounded-lg" />
-          <span className="text-white font-bold tracking-tight text-lg">REPOWIRE</span>
+          <span className="text-white font-bold tracking-tight text-lg hidden sm:inline">REPOWIRE</span>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="flex items-center gap-2 sm:gap-4">
           <div
             className={cn(
-              "flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium",
+              "flex items-center gap-1.5 sm:gap-2 px-2 sm:px-3 py-1 rounded-full text-xs font-medium",
               isConnected ? "text-emerald-500" : "text-red-500"
             )}
           >
             {isConnected ? <Wifi className="w-3.5 h-3.5" /> : <WifiOff className="w-3.5 h-3.5" />}
-            <span>{isConnected ? "Connected" : "Disconnected"}</span>
+            <span className="hidden sm:inline">{isConnected ? "Connected" : "Disconnected"}</span>
             <span className="text-zinc-600">·</span>
             <span className="tabular-nums">{onlineCount} online</span>
           </div>
@@ -149,11 +157,26 @@ export default function Dashboard() {
       </header>
 
       {/* Body: sidebar + main panel */}
-      <div className="flex flex-1 overflow-hidden">
+      <div className="flex flex-1 overflow-hidden relative">
+        {/* Mobile sidebar overlay */}
+        {mobileMenuOpen && (
+          <div className="absolute inset-0 z-30 md:hidden flex">
+            <Sidebar
+              peers={peers}
+              selectedPeerId={selectedPeerId}
+              onSelectPeer={handleSelectPeer}
+              className="w-64 bg-zinc-950"
+            />
+            <div className="flex-1 bg-black/50" onClick={() => setMobileMenuOpen(false)} />
+          </div>
+        )}
+
+        {/* Desktop sidebar */}
         <Sidebar
           peers={peers}
           selectedPeerId={selectedPeerId}
           onSelectPeer={handleSelectPeer}
+          className="hidden md:flex"
         />
 
         {/* Main panel */}

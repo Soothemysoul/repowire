@@ -9,9 +9,10 @@ interface SidebarProps {
   peers: Peer[];
   selectedPeerId: string | null;
   onSelectPeer: (peer: Peer) => void;
+  className?: string;
 }
 
-export function Sidebar({ peers, selectedPeerId, onSelectPeer }: SidebarProps) {
+export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: SidebarProps) {
   const [offlineExpanded, setOfflineExpanded] = useState(false);
 
   const { active, offline } = useMemo(() => {
@@ -61,7 +62,7 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer }: SidebarProps) {
   };
 
   return (
-    <aside className="w-56 border-r border-zinc-800 flex flex-col overflow-y-auto shrink-0">
+    <aside className={cn("w-56 border-r border-zinc-800 flex flex-col overflow-y-auto shrink-0", className)}>
       {/* Active peers section */}
       <div className="px-3 pt-3 pb-1">
         <span className="text-[10px] font-mono text-zinc-600 uppercase tracking-wider">
