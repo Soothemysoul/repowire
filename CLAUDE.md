@@ -260,7 +260,34 @@ Key files:
 
 **CORS Protection**
 
-The daemon restricts CORS to localhost origins only (`http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:8377`, `http://127.0.0.1:8377`) to prevent CSRF attacks from malicious websites.
+The daemon restricts CORS to localhost origins only (`http://localhost:3000`, `http://127.0.0.1:3000`, `http://localhost:8377`, `http://127.0.0.1:8377`) to prevent CSRF attacks from malicious websites. When relay is enabled, `https://repowire.io` and `https://relay.repowire.io` are also allowed.
+
+### Hosted Relay (`relay/`)
+
+The hosted relay at `relay.repowire.io` enables cross-machine agent meshing and remote dashboard access.
+
+**Architecture:**
+```
+Browser → repowire.io → enter key → relay proxies via WSS → local daemon → dashboard
+Daemon A ←WSS→ relay.repowire.io ←WSS→ Daemon B (cross-machine mesh)
+```
+
+**How it works:**
+- `repowire serve --relay` connects the local daemon to the relay via outbound WebSocket
+- The relay bridges messages between daemons (daemon-to-daemon, NOT peer-to-relay)
+- HTTP tunnel: browser requests to `/d/{api_key}/...` are proxied through the WSS tunnel to the local daemon
+- Auth: stateless HMAC-SHA256 keys (`rw_{user_id}_{signature}`), validated via `REPOWIRE_RELAY_SECRET` env var
+
+**Key files:**
+- `repowire/relay/server.py` — FastAPI relay server (WebSocket bridge + HTTP tunnel + landing page)
+- `repowire/relay/auth.py` — Stateless HMAC API key generation/validation
+- `repowire/daemon/relay_client.py` — Outbound WSS client with auto-reconnect + HTTP tunnel handler
+
+**Deployment:**
+- GKE Autopilot (Spot Pods), namespace `repowire`
+- Gateway API HTTPRoute serves both `repowire.io` and `relay.repowire.io`
+- CI/CD: `.github/workflows/relay.yml` (GitHub Actions → GCR → Helm)
+- Image: `us-docker.pkg.dev/baldmaninc/gcr.io/repowire-relay`
 
 ### Configuration
 
@@ -281,8 +308,10 @@ daemon:
       - ~/git
       - ~/projects
 
-relay:  # Experimental - not usable yet
-  enabled: false
+relay:
+  enabled: true
+  url: "wss://relay.repowire.io"
+  api_key: "rw_..."  # Auto-generated on first `repowire serve --relay`
 
 peers:
   frontend:

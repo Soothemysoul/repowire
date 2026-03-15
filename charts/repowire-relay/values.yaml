@@ -34,11 +34,13 @@ tolerations:
 # HTTPRoute configuration
 httpRoute:
   enabled: true
-  hostname: relay.repowire.io
+  hostnames:
+    - relay.repowire.io
+    - repowire.io
   gatewayNamespace: clusterkit
   gatewayName: clusterkit-gateway
   annotations:
-    external-dns.alpha.kubernetes.io/cloudflare-proxied: "false"
+    external-dns.alpha.kubernetes.io/cloudflare-proxied: "true"
 
 # Secret for JWT signing
 secrets:

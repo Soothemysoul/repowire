@@ -36,14 +36,33 @@ def main() -> None:
 @click.option("--relay", is_flag=True, help="Enable relay mode")
 def serve(host: str, port: int, relay: bool) -> None:
     """Start the repowire HTTP daemon."""
+    import getpass
+
     import uvicorn
 
+    from repowire.config.models import load_config
     from repowire.daemon.app import create_app
 
-    app = create_app(relay_mode=relay)
-    console.print(f"[cyan]Starting Repowire daemon on {host}:{port}...[/]")
+    config = load_config()
     if relay:
-        console.print("[dim]Relay mode enabled[/]")
+        config.relay.enabled = True
+
+    # Auto-generate relay key on first connect
+    if config.relay.enabled and not config.relay.api_key:
+        from repowire.relay.auth import generate_api_key
+
+        user_id = getpass.getuser()
+        api_key = generate_api_key(user_id)
+        config.relay.api_key = api_key.key
+        config.save()
+        console.print(f"[green]Generated relay key:[/] {api_key.key}")
+
+    app = create_app(config=config)
+    console.print(f"[cyan]Starting Repowire daemon on {host}:{port}...[/]")
+    if config.relay.enabled and config.relay.api_key:
+        relay_url = config.relay.url.replace("wss://", "https://").replace("/ws/relay", "")
+        dashboard_url = f"{relay_url}/d/{config.relay.api_key}/dashboard"
+        console.print(f"[green]Dashboard:[/] {dashboard_url}")
     uvicorn.run(app, host=host, port=port, ws_ping_interval=None, ws_ping_timeout=None)
 
 
@@ -862,17 +881,12 @@ def relay() -> None:
 @click.option("--port", default=8000, help="Port to listen on")
 def relay_start(host: str, port: int) -> None:
     """Start the relay server."""
-    try:
-        import uvicorn
+    import uvicorn
 
-        from repowire.relay.server import create_app
-    except ImportError:
-        console.print("[red]Relay dependencies not installed.[/]")
-        console.print("Run: pip install repowire[relay]")
-        return
+    from repowire.relay.server import create_app
 
     console.print(f"[cyan]Starting relay server on {host}:{port}...[/]")
-    uvicorn.run(create_app(), host=host, port=port)
+    uvicorn.run(create_app(), host=host, port=port, ws_ping_interval=None, ws_ping_timeout=None)
 
 
 @relay.command(name="generate-key")

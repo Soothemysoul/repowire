@@ -31,10 +31,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-relay = [
-    "redis>=5.0.1",
-    "python-socketio>=5.10.0",
-]
+relay = []
 dev = [
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",

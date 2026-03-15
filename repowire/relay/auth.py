@@ -1,86 +1,68 @@
-"""API key authentication for the relay server."""
+"""Stateless HMAC-based API key authentication for the relay server."""
 
 from __future__ import annotations
 
-import json
-import secrets
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any
+import hashlib
+import hmac
+import logging
+import os
 
 from pydantic import BaseModel, Field
 
-API_KEYS_PATH = Path.home() / ".repowire" / "api_keys.json"
+log = logging.getLogger(__name__)
+
 API_KEY_PREFIX = "rw_"
-API_KEY_LENGTH = 32
+_DEV_SECRET = "repowire-dev-secret-do-not-use-in-production"
 
 
 class APIKey(BaseModel):
     """An API key for relay authentication."""
 
-    key: str = Field(..., description="The API key")
+    key: str = Field(..., description="The full API key string")
     user_id: str = Field(..., description="User identifier")
     name: str = Field(default="default", description="Key name/label")
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    last_used: datetime | None = Field(default=None)
 
 
-def _load_keys() -> dict[str, Any]:
-    if not API_KEYS_PATH.exists():
-        return {"keys": {}}
-    return json.loads(API_KEYS_PATH.read_text())
+def _get_secret() -> str:
+    """Return the HMAC signing secret from env, falling back to dev secret."""
+    secret = os.environ.get("REPOWIRE_RELAY_SECRET")
+    if not secret:
+        log.warning("REPOWIRE_RELAY_SECRET not set — using insecure dev secret")
+        return _DEV_SECRET
+    return secret
 
 
-def _save_keys(data: dict[str, Any]) -> None:
-    API_KEYS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    API_KEYS_PATH.write_text(json.dumps(data, indent=2, default=str))
+def _compute_signature(secret: str, user_id: str) -> str:
+    """HMAC-SHA256(secret, user_id), truncated to 16 hex chars."""
+    sig = hmac.new(secret.encode(), user_id.encode(), hashlib.sha256).hexdigest()
+    return sig[:16]
 
 
 def generate_api_key(user_id: str, name: str = "default") -> APIKey:
-    """Generate a new API key for a user."""
-    key = f"{API_KEY_PREFIX}{secrets.token_urlsafe(API_KEY_LENGTH)}"
-    api_key = APIKey(key=key, user_id=user_id, name=name)
-
-    data = _load_keys()
-    data["keys"][key] = api_key.model_dump(mode="json")
-    _save_keys(data)
-
-    return api_key
+    """Generate an API key: rw_{user_id}_{signature}."""
+    secret = _get_secret()
+    sig = _compute_signature(secret, user_id)
+    key = f"{API_KEY_PREFIX}{user_id}_{sig}"
+    return APIKey(key=key, user_id=user_id, name=name)
 
 
 def validate_api_key(key: str) -> APIKey | None:
-    """Validate an API key and return the APIKey if valid."""
+    """Parse and validate an API key by recomputing the HMAC signature."""
     if not key.startswith(API_KEY_PREFIX):
         return None
 
-    data = _load_keys()
-    key_data = data["keys"].get(key)
-
-    if not key_data:
+    body = key[len(API_KEY_PREFIX) :]
+    parts = body.rsplit("_", 1)
+    if len(parts) != 2:
         return None
 
-    api_key = APIKey(**key_data)
+    user_id, sig = parts
+    if not user_id or not sig:
+        return None
 
-    key_data["last_used"] = datetime.now(timezone.utc).isoformat()
-    _save_keys(data)
+    secret = _get_secret()
+    expected = _compute_signature(secret, user_id)
+    if not hmac.compare_digest(sig, expected):
+        return None
 
-    return api_key
-
-
-def list_api_keys(user_id: str | None = None) -> list[APIKey]:
-    """List all API keys, optionally filtered by user_id."""
-    data = _load_keys()
-    keys = [APIKey(**v) for v in data["keys"].values()]
-    if user_id:
-        keys = [k for k in keys if k.user_id == user_id]
-    return keys
-
-
-def revoke_api_key(key: str) -> bool:
-    """Revoke an API key. Returns True if key was found and revoked."""
-    data = _load_keys()
-    if key in data["keys"]:
-        del data["keys"][key]
-        _save_keys(data)
-        return True
-    return False
+    return APIKey(key=key, user_id=user_id)

@@ -1,14 +1,21 @@
-FROM python:3.12-slim
+FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir uv
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_LINK_MODE=copy
 
-COPY pyproject.toml README.md ./
+# Dependency cache layer
+COPY pyproject.toml uv.lock README.md ./
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-install-project --no-dev
+
+# App code layer
 COPY repowire/ repowire/
+RUN mkdir -p web/out
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
-RUN uv pip install --system ".[relay]"
+ENV PATH="/app/.venv/bin:$PATH"
+ENV PYTHONUNBUFFERED=1
 
 EXPOSE 8000
-
-CMD ["python", "-m", "uvicorn", "repowire.relay.server:socket_app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["repowire", "relay", "start", "--host", "0.0.0.0", "--port", "8000"]

@@ -21,6 +21,7 @@ from repowire.daemon.core import PeerManager
 from repowire.daemon.deps import cleanup_deps, init_deps
 from repowire.daemon.message_router import MessageRouter
 from repowire.daemon.query_tracker import QueryTracker
+from repowire.daemon.relay_client import RelayClient
 from repowire.daemon.routes import health, messages, peers, websocket
 from repowire.daemon.routes import spawn as spawn_routes
 from repowire.daemon.session_mapper import SessionMapper
@@ -81,10 +82,21 @@ def create_app(
         await peer_manager.start()
         init_deps(cfg, peer_manager, app.state)
 
+        # Start relay client if enabled
+        relay_client: RelayClient | None = None
+        if cfg.relay.enabled and cfg.relay.api_key:
+            local_url = f"http://{cfg.daemon.host}:{cfg.daemon.port}"
+            relay_client = RelayClient(config=cfg.relay, local_base_url=local_url)
+            await relay_client.start()
+            app.state.relay_client = relay_client
+            logger.info("Relay client connected to %s", cfg.relay.url)
+
         logger.info("Unified WebSocket backend initialized")
 
         yield
 
+        if relay_client:
+            await relay_client.stop()
         await peer_manager.stop()
         cleanup_deps()
 
@@ -95,16 +107,23 @@ def create_app(
         lifespan=lifespan,
     )
 
-    # CORS middleware - restrict to localhost origins to prevent CSRF attacks
-    # TODO(relay): when going hosted, replace hardcoded origins with config-driven allowlist
+    # CORS middleware
+    cors_origins = [
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:8377",
+        "http://127.0.0.1:8377",
+    ]
+    if _relay_mode or (_config and _config.relay.enabled):
+        cors_origins.extend(
+            [
+                "https://repowire.io",
+                "https://relay.repowire.io",
+            ]
+        )
     app.add_middleware(
         CORSMiddleware,  # type: ignore[invalid-argument-type]
-        allow_origins=[
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:8377",
-            "http://127.0.0.1:8377",
-        ],
+        allow_origins=cors_origins,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
