@@ -28,6 +28,9 @@ dependencies = [
     "httpx>=0.26.0",
     "libtmux>=0.37.0",
     "websockets>=13.0",
+    "datastar-py>=0.8.0",
+    "jinja2>=3.1.6",
+    "markdown>=3.10.2",
 ]
 
 [project.optional-dependencies]
