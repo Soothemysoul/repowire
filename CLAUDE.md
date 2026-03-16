@@ -390,12 +390,17 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 8. **TSV MCP output** - `list_peers` and `whoami` return TSV (more token-efficient than JSON for agents)
 9. **Ghost eviction** - `register_peer` evicts OFFLINE peers with same (display_name, backend) regardless of circle, cleaning up stale registrations from dead ws-hooks
 10. **Circle-preferred `from_peer` lookup** - `from_peer` is resolved preferring the target peer's circle first, preventing false circle boundary errors when sender name appears in multiple circles
+11. **Event persistence** - Events persisted to `~/.repowire/events.json`, loaded on startup. Writes debounced via `lazy_repair` cycle (not per-event). Deque maxlen=100 caps memory.
+12. **Tool call extraction** - Stop hook extracts `tool_use` entries from Claude's transcript JSONL and includes them as `tool_calls` in `chat_turn` events. Dashboard renders them as collapsible lists per assistant turn.
+13. **SSE bridge** - Relay serves `/events/stream` SSE endpoint. Shared poller fans out to all connected browser clients. Dashboard shows "Connected"/"Disconnected" based on SSE state.
+14. **Dashboard identity** - Messages from `@dashboard` are from a human at the web control plane. Context injection tells agents to treat them as direct user instructions.
 
 ## Testing
 
 - Framework: pytest with pytest-asyncio (auto mode)
 - Tests use `tempfile` and `unittest.mock` extensively
-- No integration tests yet (directory exists at `tests/integration/`)
+- Route tests use `httpx.AsyncClient` with `ASGITransport` and manually initialized deps (no lifespan)
+- Important: `uv tool install --force --reinstall .` is required after code changes for hooks to pick up new code (hooks run from installed package, not source)
 
 ## Integration Testing
 
