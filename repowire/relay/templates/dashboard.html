@@ -67,7 +67,7 @@ tailwind.config = {
 
     <!-- Main content -->
     <main id="main-content" class="flex-1 flex flex-col overflow-hidden min-w-0"
-          data-on-load="@get('/v2/sse')">
+          data-on-load="@get('/v2/sse', {retryInterval: 2000, retry: 'always'})">
       <!-- Populated via SSE -->
       <div class="flex items-center justify-center h-full text-zinc-600 text-sm">
         Loading...

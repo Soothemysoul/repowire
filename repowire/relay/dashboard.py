@@ -6,8 +6,6 @@ as HTML fragments using Datastar's patch-elements protocol.
 
 from __future__ import annotations
 
-import asyncio
-import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -148,54 +146,36 @@ async def generate_sse_updates(
     """
     from datastar_py import ServerSentEventGenerator as SseGen  # noqa: N814
 
-    last_hash = None
-    first = True
+    # Short-lived: send one batch then close. Datastar auto-retries via retry config.
+    # This avoids Cloudflare killing long-lived SSE connections (QUIC errors).
+    try:
+        peers = await get_peers_fn()
+        events = await get_events_fn()
 
-    while True:
-        try:
-            if first:
-                first = False
-            else:
-                await asyncio.sleep(2)
-            peers = await get_peers_fn()
-            events = await get_events_fn()
+        sidebar_html = _render_sidebar(peers)
+        overview_html = _render_overview(peers, events)
+        online_count = sum(
+            1 for p in peers if p.get("status") in ("online", "busy")
+        )
 
-            # Compute a simple hash to detect changes
-            content_hash = hash(json.dumps([
-                [(p.get("name"), p.get("status"), p.get("description")) for p in peers],
-                len(events),
-                events[-1].get("id") if events else None,
-            ], default=str))
-
-            if content_hash != last_hash:
-                last_hash = content_hash
-
-                sidebar_html = _render_sidebar(peers)
-                overview_html = _render_overview(peers, events)
-                online_count = sum(
-                    1 for p in peers if p.get("status") in ("online", "busy")
-                )
-
-                yield SseGen.patch_elements(
-                    f'<div id="sidebar">{sidebar_html}</div>',
-                    selector="#sidebar",
-                    mode="inner",
-                )
-                yield SseGen.patch_elements(
-                    f'<div id="mobile-sidebar">{sidebar_html}</div>',
-                    selector="#mobile-sidebar",
-                    mode="inner",
-                )
-                yield SseGen.patch_elements(
-                    overview_html,
-                    selector="#main-content",
-                    mode="inner",
-                )
-                yield SseGen.patch_elements(
-                    f'<span id="online-count" class="tabular-nums">{online_count} online</span>',
-                    selector="#online-count",
-                )
-
-        except Exception:
-            log.debug("SSE update error", exc_info=True)
-            await asyncio.sleep(2)
+        yield SseGen.patch_elements(
+            f'<div id="sidebar">{sidebar_html}</div>',
+            selector="#sidebar",
+            mode="inner",
+        )
+        yield SseGen.patch_elements(
+            f'<div id="mobile-sidebar">{sidebar_html}</div>',
+            selector="#mobile-sidebar",
+            mode="inner",
+        )
+        yield SseGen.patch_elements(
+            overview_html,
+            selector="#main-content",
+            mode="inner",
+        )
+        yield SseGen.patch_elements(
+            f'<span id="online-count" class="tabular-nums">{online_count} online</span>',
+            selector="#online-count",
+        )
+    except Exception:
+        log.debug("SSE update error", exc_info=True)
