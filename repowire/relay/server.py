@@ -397,18 +397,29 @@ async def _poll_events(user_id: str) -> None:
                 _sse_last_event_id = events[-1].get("id")
                 continue
 
+            # Find events after the last known ID
+            new_events = []
+            found_marker = False
             for event in events:
-                eid = event.get("id")
-                if eid and eid != _sse_last_event_id:
-                    data = f"data: {_json.dumps(event)}\n\n"
-                    dead: list[asyncio.Queue[str]] = []
-                    for q in _sse_clients:
-                        try:
-                            q.put_nowait(data)
-                        except asyncio.QueueFull:
-                            dead.append(q)
-                    for q in dead:
-                        _sse_clients.discard(q)
+                if found_marker:
+                    new_events.append(event)
+                elif event.get("id") == _sse_last_event_id:
+                    found_marker = True
+
+            # If marker not found (e.g., events rotated out), send all
+            if not found_marker:
+                new_events = events
+
+            for event in new_events:
+                data = f"data: {_json.dumps(event)}\n\n"
+                dead: list[asyncio.Queue[str]] = []
+                for q in _sse_clients:
+                    try:
+                        q.put_nowait(data)
+                    except asyncio.QueueFull:
+                        dead.append(q)
+                for q in dead:
+                    _sse_clients.discard(q)
 
             _sse_last_event_id = events[-1].get("id", _sse_last_event_id)
         except Exception:
