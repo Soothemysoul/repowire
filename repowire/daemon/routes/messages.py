@@ -240,12 +240,20 @@ async def deliver_response(
     return OkResponse()
 
 
+class ToolCallInfo(BaseModel):
+    """Tool call summary."""
+
+    name: str
+    input: str = ""
+
+
 class ChatTurnRequest(BaseModel):
     """Request to ingest a chat turn."""
 
     peer: str
     role: Literal["user", "assistant"]
     text: str
+    tool_calls: list[ToolCallInfo] | None = None
 
 
 @router.post("/events/chat", response_model=OkResponse)
