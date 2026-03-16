@@ -5,6 +5,7 @@ import { Activity, Plus, Radio, Users } from "lucide-react";
 import { cn, statusDot, timeAgo } from "../lib/utils";
 import { SpawnDialog } from "./SpawnDialog";
 import type { Peer, Event } from "../types";
+import { peerLabel } from "../types";
 
 interface OverviewGridProps {
   peers: Peer[];
@@ -104,7 +105,7 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
                   <div className="flex items-center gap-2 mb-1">
                     <span className={cn("w-2 h-2 rounded-full", statusDot(peer.status))} />
                     <span className="text-sm font-medium text-zinc-200 group-hover:text-white transition-colors truncate">
-                      {peer.description || peer.name}
+                      {peerLabel(peer)}
                     </span>
                     <span
                       className={cn(
@@ -117,9 +118,7 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
                       {peer.status}
                     </span>
                   </div>
-                  {peer.description && (
-                    <p className="text-[10px] text-zinc-600 font-mono mb-2">{peer.name}</p>
-                  )}
+                  <p className="text-[10px] text-zinc-600 font-mono mb-2">{peer.name}</p>
 
                   {/* Details */}
                   <div className="space-y-1 text-xs text-zinc-500 font-mono">

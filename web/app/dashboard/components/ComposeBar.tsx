@@ -4,13 +4,15 @@ import { useState, useRef, useEffect, KeyboardEvent } from "react";
 import { RefreshCw, Send } from "lucide-react";
 import { cn } from "../lib/utils";
 import type { Peer } from "../types";
+import { peerLabel } from "../types";
 
 interface ComposeBarProps {
   peer: Peer;
   apiBase: string;
+  onSent?: () => void;
 }
 
-export function ComposeBar({ peer, apiBase }: ComposeBarProps) {
+export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
   const [text, setText] = useState("");
   const [mode, setMode] = useState<"notify" | "ask">("notify");
   const [isPending, setIsPending] = useState(false);
@@ -44,6 +46,7 @@ export function ComposeBar({ peer, apiBase }: ComposeBarProps) {
           setError(body.detail || `Error ${res.status}`);
         } else {
           setText("");
+          if (onSent) setTimeout(onSent, 1000);
         }
       } else {
         const res = await fetch(`${apiBase}/query`, {
@@ -57,6 +60,7 @@ export function ComposeBar({ peer, apiBase }: ComposeBarProps) {
         } else {
           setResponse(data.text ?? null);
           setText("");
+          if (onSent) setTimeout(onSent, 1000);
         }
       }
     } catch (e) {
@@ -79,7 +83,7 @@ export function ComposeBar({ peer, apiBase }: ComposeBarProps) {
       <div className="flex items-center gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <span className="text-xs text-zinc-300 font-mono truncate max-w-[10rem]" title={peer.name}>
-            → {peer.description || peer.name}
+            → {peerLabel(peer)}
           </span>
           <div className="flex rounded-md overflow-hidden border border-zinc-700">
             {(["notify", "ask"] as const).map((m) => (
@@ -106,7 +110,7 @@ export function ComposeBar({ peer, apiBase }: ComposeBarProps) {
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder={mode === "notify" ? `Notify ${peer.description || peer.name}...` : `Ask ${peer.description || peer.name}...`}
+          placeholder={mode === "notify" ? `Notify ${peerLabel(peer)}...` : `Ask ${peerLabel(peer)}...`}
           rows={1}
           className="flex-1 min-w-0 bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:ring-1 focus:ring-zinc-500"
         />

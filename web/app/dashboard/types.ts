@@ -16,6 +16,16 @@ export interface Peer {
   };
 }
 
+/** Human-readable label: description > project folder > session ID */
+export function peerLabel(peer: Peer): string {
+  if (peer.description) return peer.description;
+  if (peer.path) {
+    const folder = peer.path.split("/").pop();
+    if (folder) return folder;
+  }
+  return peer.name;
+}
+
 export interface Event {
   id: string;
   type: "query" | "response" | "notification" | "broadcast" | "status_change" | "chat_turn";

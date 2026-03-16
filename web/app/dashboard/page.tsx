@@ -218,7 +218,7 @@ export default function Dashboard() {
                   <div className="flex-1 overflow-y-auto">
                     <ChatPanel peer={selectedPeer} events={events} />
                   </div>
-                  <ComposeBar peer={selectedPeer} apiBase={API_BASE} />
+                  <ComposeBar key={selectedPeer.peer_id} peer={selectedPeer} apiBase={API_BASE} onSent={refreshData} />
                 </div>
               ) : (
                 <div className="flex-1 overflow-y-auto p-4">

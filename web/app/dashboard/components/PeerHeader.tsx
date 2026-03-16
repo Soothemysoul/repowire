@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { X, Folder, GitBranch, Monitor, Terminal, Copy, Check } from "lucide-react";
 import { cn, statusDot } from "../lib/utils";
+import { peerLabel } from "../types";
 import type { Peer } from "../types";
 
 interface PeerHeaderProps {
@@ -27,7 +28,7 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
           <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", statusDot(peer.status))} />
           <div className="flex flex-col min-w-0">
             <span className="text-sm sm:text-base font-semibold text-zinc-200 truncate">
-              {peer.description || peer.name}
+              {peerLabel(peer)}
             </span>
             <button
               onClick={copyName}
