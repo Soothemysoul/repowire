@@ -641,7 +641,11 @@ def create_app() -> FastAPI:
             return _json.loads(body)
 
         return DatastarResponse(
-            generate_sse_updates(get_peers, get_events, api_key.user_id)
+            generate_sse_updates(get_peers, get_events, api_key.user_id),
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
         )
 
     async def _tunnel_get(conn: DaemonConnection, path: str) -> Any:
