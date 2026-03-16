@@ -26,7 +26,7 @@
       </div>
       {% endif %}
     </div>
-    <button data-on-click="@get('/dashboard/overview')" class="ml-auto p-1.5 hover:bg-zinc-800 rounded-md transition-colors shrink-0">
+    <button data-on-click="@get('/v2/overview')" class="ml-auto p-1.5 hover:bg-zinc-800 rounded-md transition-colors shrink-0">
       <svg class="w-4 h-4 text-zinc-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/></svg>
     </button>
   </div>
@@ -92,7 +92,7 @@
       </div>
     </div>
   </div>
-  <form data-on-submit__prevent="@post('/dashboard/send/{{ peer.name }}')"
+  <form data-on-submit__prevent="@post('/v2/send/{{ peer.name }}')"
         class="flex flex-col gap-2">
     <input type="hidden" name="mode" data-bind="$composeMode">
     <textarea name="text" data-bind="$composeText"

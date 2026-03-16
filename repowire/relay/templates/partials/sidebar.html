@@ -7,7 +7,7 @@
 <ul class="flex flex-col gap-0.5 px-2 pb-2">
   {% for peer in active_peers %}
   <li>
-    <button data-on-click="@get('/dashboard/peer/{{ peer.name }}')"
+    <button data-on-click="@get('/v2/peer/{{ peer.name }}')"
             class="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-left transition-colors hover:bg-zinc-900 text-zinc-400">
       <span class="w-2 h-2 rounded-full shrink-0 {{ 'bg-emerald-500' if peer.status == 'online' else 'bg-amber-500' if peer.status == 'busy' else 'bg-zinc-600' }}"></span>
       <div class="flex flex-col min-w-0 flex-1">
