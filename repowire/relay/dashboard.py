@@ -106,6 +106,8 @@ def _render_peer_detail(peer: dict, events: list[dict]) -> str:
     for e in events:
         if e.get("type") != "chat_turn":
             continue
+        if not e.get("text", "").strip():
+            continue  # skip empty chat turns
         ep = e.get("peer", "")
         if ep == peer["name"] or ep == peer.get("display_name") or ep == project_name:
             fe = _format_event(e)
