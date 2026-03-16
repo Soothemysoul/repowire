@@ -27,17 +27,22 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
         <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
           <span className={cn("w-2.5 h-2.5 rounded-full shrink-0", statusDot(peer.status))} />
           <div className="flex flex-col min-w-0">
-            <span className="text-sm sm:text-base font-semibold text-zinc-200 truncate">
-              {peerLabel(peer)}
-            </span>
-            <button
-              onClick={copyName}
-              className="flex items-center gap-1 text-[10px] text-zinc-600 font-mono hover:text-zinc-400 transition-colors w-fit"
-              title="Copy peer name"
-            >
-              <span>{peer.name}</span>
-              {copied ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
-            </button>
+            <div className="flex items-center gap-2">
+              <span className="text-sm sm:text-base font-semibold text-zinc-200 truncate">
+                {peerLabel(peer)}
+              </span>
+              <button
+                onClick={copyName}
+                className="flex items-center gap-0.5 text-[10px] text-zinc-600 font-mono hover:text-zinc-400 transition-colors shrink-0"
+                title="Copy peer name"
+              >
+                <span>{peer.name}</span>
+                {copied ? <Check className="w-2.5 h-2.5 text-emerald-400" /> : <Copy className="w-2.5 h-2.5" />}
+              </button>
+            </div>
+            {peer.description && (
+              <span className="text-[11px] text-zinc-500 truncate">{peer.description}</span>
+            )}
           </div>
           <span
             className={cn(

@@ -55,7 +55,9 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
           <span className={cn("w-2 h-2 rounded-full shrink-0", statusDot(peer.status))} />
           <div className="flex flex-col min-w-0 flex-1">
             <span className="text-sm font-medium truncate">{peerLabel(peer)}</span>
-            <span className="text-[10px] text-zinc-600 font-mono truncate">{peer.name}</span>
+            {peer.description && (
+              <span className="text-[10px] text-zinc-500 truncate">{peer.description}</span>
+            )}
           </div>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono shrink-0">
             {peer.circle}

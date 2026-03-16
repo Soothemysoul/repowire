@@ -118,6 +118,9 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
                       {peer.status}
                     </span>
                   </div>
+                  {peer.description && (
+                    <p className="text-xs text-zinc-500 mb-1 truncate">{peer.description}</p>
+                  )}
                   <p className="text-[10px] text-zinc-600 font-mono mb-2">{peer.name}</p>
 
                   {/* Details */}

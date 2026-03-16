@@ -16,9 +16,8 @@ export interface Peer {
   };
 }
 
-/** Human-readable label: description > project folder > session ID */
+/** Human-readable label: project folder > session ID */
 export function peerLabel(peer: Peer): string {
-  if (peer.description) return peer.description;
   if (peer.path) {
     const folder = peer.path.split("/").pop();
     if (folder) return folder;
