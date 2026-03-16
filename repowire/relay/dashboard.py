@@ -149,9 +149,14 @@ async def generate_sse_updates(
     from datastar_py import ServerSentEventGenerator as SseGen  # noqa: N814
 
     last_hash = None
+    first = True
 
     while True:
         try:
+            if first:
+                first = False
+            else:
+                await asyncio.sleep(2)
             peers = await get_peers_fn()
             events = await get_events_fn()
 
@@ -193,5 +198,4 @@ async def generate_sse_updates(
 
         except Exception:
             log.debug("SSE update error", exc_info=True)
-
-        await asyncio.sleep(2)
+            await asyncio.sleep(2)
