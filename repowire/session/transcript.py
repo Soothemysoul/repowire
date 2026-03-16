@@ -63,13 +63,20 @@ def extract_last_turn_tool_calls(transcript_path: Path) -> list[dict[str, str]]:
             except json.JSONDecodeError:
                 continue
 
-    # Walk backwards: collect tool_use from assistant entries until we hit a user entry
+    # Walk backwards: collect tool_use from assistant entries until we hit a real user message
     tool_calls: list[dict[str, str]] = []
     found_assistant = False
     for entry in reversed(entries):
         entry_type = entry.get("type")
         if entry_type == "user" and found_assistant:
-            break
+            # Skip tool_result entries (they have type=user but aren't real user messages)
+            content = entry.get("message", {}).get("content", [])
+            is_tool_result = isinstance(content, list) and all(
+                isinstance(c, dict) and c.get("type") == "tool_result" for c in content
+            )
+            if not is_tool_result:
+                break
+            continue
         if entry_type != "assistant":
             continue
         found_assistant = True
