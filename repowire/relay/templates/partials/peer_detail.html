@@ -93,15 +93,14 @@
       </div>
     </div>
   </div>
-  <form data-on-submit__prevent="@post('/v2/send/{{ peer.name }}')"
-        class="flex flex-col gap-2">
-    <input type="hidden" name="mode" data-bind="$composeMode">
-    <textarea name="text" data-bind="$composeText"
+  <form action="/v2/send/{{ peer.name }}" method="POST" class="flex flex-col gap-2">
+    <input type="hidden" name="mode" value="notify">
+    <textarea name="text"
               placeholder="Message {{ peer.label }}..."
               rows="1"
+              required
               class="w-full bg-zinc-900 border border-zinc-700 rounded-lg px-3 py-2 text-sm text-zinc-300 placeholder-zinc-600 resize-none focus:outline-none focus:ring-1 focus:ring-zinc-500"></textarea>
     <button type="submit"
-            data-attr-disabled="$composeText.trim() === ''"
             class="w-full flex items-center justify-center gap-2 py-2 rounded-lg text-sm font-medium transition-colors bg-emerald-600 hover:bg-emerald-500 text-white disabled:opacity-40 disabled:cursor-not-allowed">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"/></svg>
       <span>Send</span>

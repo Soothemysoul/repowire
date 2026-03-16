@@ -732,18 +732,10 @@ def create_app() -> FastAPI:
 
         import json as _json
 
-        from datastar_py import ServerSentEventGenerator as SseGen  # noqa: N814
-        from datastar_py.fastapi import DatastarResponse
-
-        # Parse form data from Datastar signals
-        body = await request.body()
-        try:
-            signals = _json.loads(body)
-        except _json.JSONDecodeError:
-            raise HTTPException(status_code=400, detail="Invalid JSON")
-
-        text = signals.get("composeText", "").strip()
-        mode = signals.get("composeMode", "notify")
+        # Parse form data
+        form = await request.form()
+        text = str(form.get("text", "")).strip()
+        mode = str(form.get("mode", "notify"))
         if not text:
             raise HTTPException(status_code=400, detail="Empty message")
 
@@ -782,11 +774,10 @@ def create_app() -> FastAPI:
             resp_body = base64.b64decode(resp.get("body", ""))
             raise HTTPException(status_code=resp["status"], detail=resp_body.decode())
 
-        # Clear compose text and refresh peer view
-        async def gen():
-            yield SseGen.patch_signals({"composeText": ""})
-
-        return DatastarResponse(gen())
+        # Redirect back to peer detail (server re-renders with fresh data)
+        return RedirectResponse(
+            url=f"/v2/peer/{peer_name}", status_code=303
+        )
 
     # -- Health --
 
