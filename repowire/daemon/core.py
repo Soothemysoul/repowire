@@ -219,32 +219,9 @@ class PeerManager:
             return None
 
     async def get_all_peers(self) -> list[Peer]:
-        """Get all registered peers.
-
-        Combines in-memory peers with session mappings.
-        """
+        """Get all registered peers."""
         async with self._lock:
-            result: list[Peer] = []
-            mappings = self._session_mapper.get_all_mappings()
-
-            for session_id, mapping in mappings.items():
-                if session_id in self._peers:
-                    result.append(self._peers[session_id])
-                else:
-                    result.append(
-                        Peer(
-                            peer_id=session_id,
-                            display_name=mapping.display_name,
-                            path=mapping.path or "",
-                            machine="unknown",
-                            backend=mapping.backend,
-                            circle=mapping.circle,
-                            status=PeerStatus.OFFLINE,
-                            metadata={},
-                        )
-                    )
-
-            return result
+            return list(self._peers.values())
 
     def _resolve_from_peer_unlocked(
         self, from_peer: str, target_peer: Peer, bypass_circle: bool
@@ -601,5 +578,6 @@ class PeerManager:
             ]
             for pid in stale:
                 del self._peers[pid]
+                self._session_mapper.unregister_session(pid)
             if stale:
                 logger.info(f"lazy_repair: evicted {len(stale)} stale offline peers")

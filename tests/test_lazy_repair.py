@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -41,7 +42,6 @@ def _make_manager(
     config = Config()
     router = MagicMock()
     session_mapper = MagicMock()
-    session_mapper.get_all_mappings.return_value = {}
     return PeerManager(
         config=config,
         message_router=router,
@@ -218,6 +218,35 @@ class TestLazyRepairLiveness:
 
         # Should not raise
         await manager.lazy_repair()
+
+    async def test_stale_offline_evicted_from_session_mapper(self):
+        """Stale OFFLINE peers are removed from both _peers and session_mapper."""
+        transport = MagicMock(spec=WebSocketTransport)
+        transport.is_connected = MagicMock(return_value=False)
+        qt = MagicMock()
+        qt.cancel_queries_to_peer = MagicMock(return_value=0)
+        manager = _make_manager(transport=transport, query_tracker=qt)
+
+        peer = _make_peer(status=PeerStatus.ONLINE)
+        await manager.register_peer(peer)
+
+        # First repair: marks peer OFFLINE
+        await manager.lazy_repair()
+        result = await manager.get_peer(peer.peer_id)
+        assert result is not None
+        assert result.status == PeerStatus.OFFLINE
+
+        # Set last_seen far in the past to trigger stale eviction
+        result.last_seen = datetime.now(timezone.utc) - timedelta(hours=100)
+
+        # Expire debounce
+        manager._last_repair = 0.0
+
+        # Second repair: evicts stale offline peer
+        await manager.lazy_repair()
+
+        assert await manager.get_peer(peer.peer_id) is None
+        manager._session_mapper.unregister_session.assert_called_with(peer.peer_id)
 
 
 # -- concurrent lock --

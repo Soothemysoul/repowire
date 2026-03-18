@@ -35,7 +35,6 @@ def mock_message_router():
 def mock_session_mapper():
     """Mock SessionMapper – no persisted sessions."""
     mapper = MagicMock(spec=SessionMapper)
-    mapper.get_all_mappings.return_value = {}
     return mapper
 
 
