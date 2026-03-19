@@ -75,6 +75,15 @@ class TestSessionMain:
             mock_stdin.read.return_value = "not json"
             assert main() == 0
 
+    def test_ephemeral_session_ignored(self):
+        """SessionStart without model field (tool sub-session) is skipped."""
+        result = _run_with_input({
+            "hook_event_name": "SessionStart",
+            "cwd": "/tmp/test",
+            "session_id": "ephemeral-session-id",
+        })
+        assert result == 0
+
     def test_session_end_is_noop(self):
         result = _run_with_input({
             "hook_event_name": "SessionEnd",
@@ -97,6 +106,7 @@ class TestSessionMain:
                 "hook_event_name": "SessionStart",
                 "cwd": "/tmp/test",
                 "session_id": "abc12345-rest",
+                "model": "claude-sonnet-4-6",
             })
             assert result == 0
             mock_register.assert_called_once()

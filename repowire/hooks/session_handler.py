@@ -116,6 +116,11 @@ def main() -> int:
     folder_name = get_peer_name(cwd)
 
     if event == "SessionStart":
+        # Skip ephemeral tool sub-sessions (Haiku proxied tool calls).
+        # Real user sessions include a "model" field; sub-sessions don't.
+        if "model" not in input_data:
+            return 0
+
         # Derive stable name from first 8 chars of Claude's session_id
         display_name = claude_session_id[:8] if claude_session_id else folder_name
 
