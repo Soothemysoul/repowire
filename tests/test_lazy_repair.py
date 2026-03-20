@@ -246,7 +246,7 @@ class TestLazyRepairLiveness:
         await manager.lazy_repair()
 
         assert await manager.get_peer(peer.peer_id) is None
-        manager._session_mapper.unregister_session.assert_called_with(peer.peer_id)
+        manager._session_mapper.unregister_sessions.assert_called_with([peer.peer_id])
 
 
 # -- concurrent lock --

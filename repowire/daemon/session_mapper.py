@@ -194,3 +194,15 @@ class SessionMapper:
             logger.info(f"Unregistered session {session_id}")
             return True
         return False
+
+    def unregister_sessions(self, session_ids: list[str]) -> int:
+        """Batch unregister sessions (single save). Returns count removed."""
+        removed = 0
+        for sid in session_ids:
+            if sid in self._mappings:
+                del self._mappings[sid]
+                removed += 1
+        if removed:
+            self._save()
+            logger.info(f"Batch unregistered {removed} sessions")
+        return removed

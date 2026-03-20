@@ -116,28 +116,32 @@ def main() -> int:
     folder_name = get_peer_name(cwd)
 
     if event == "SessionStart":
-        # Skip ephemeral tool sub-sessions (Haiku proxied tool calls).
-        # Real user sessions include a "model" field; sub-sessions don't.
-        if "model" not in input_data:
-            return 0
+        # Ephemeral tool sub-sessions (Haiku-proxied) fire SessionStart too.
+        # Skip entirely if a ws-hook is already running for this pane.
+        pane_file = get_pane_file(pane_id)
+        pid_path = CACHE_DIR / "logs" / f"ws-hook-{pane_file}.pid"
+
+        try:
+            old_pid = int(pid_path.read_text().strip())
+            os.kill(old_pid, 0)  # probe — doesn't kill
+            return 0  # ws-hook alive → ephemeral sub-session, skip entirely
+        except (FileNotFoundError, ValueError, ProcessLookupError, OSError):
+            pass  # Missing, dead, or invalid → continue with full registration
 
         # Derive stable name from first 8 chars of Claude's session_id
         display_name = claude_session_id[:8] if claude_session_id else folder_name
 
-        # Launch async WebSocket hook in background
-        # If one is already running, the new WS connect will replace
-        # the old connection atomically in the daemon.
+        # Launch async WebSocket hook in background — one per pane.
         try:
             hook_script = Path(__file__).parent / "websocket_hook.py"
             if hook_script.exists():
                 log_dir = CACHE_DIR / "logs"
                 log_dir.mkdir(parents=True, exist_ok=True)
-                pane_file = get_pane_file(pane_id)
                 log_file = open(log_dir / f"ws-hook-{pane_file}.log", "w")  # noqa: SIM115
                 try:
                     env = os.environ.copy()
                     env["REPOWIRE_DISPLAY_NAME"] = display_name
-                    subprocess.Popen(
+                    proc = subprocess.Popen(
                         [sys.executable, str(hook_script)],
                         stdout=log_file,
                         stderr=log_file,
@@ -145,12 +149,13 @@ def main() -> int:
                         cwd=cwd,
                         env=env,
                     )
+                    pid_path.write_text(str(proc.pid))
                 finally:
                     log_file.close()  # Always close — subprocess inherits the fd
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
 
-        # Register peer via HTTP on every SessionStart.
+        # Register peer via HTTP.
         circle = tmux_info["session_name"] or "default"
         _register_peer_http(display_name, cwd, circle, metadata={"project": folder_name})
 

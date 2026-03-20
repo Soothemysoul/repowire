@@ -75,15 +75,6 @@ class TestSessionMain:
             mock_stdin.read.return_value = "not json"
             assert main() == 0
 
-    def test_ephemeral_session_ignored(self):
-        """SessionStart without model field (tool sub-session) is skipped."""
-        result = _run_with_input({
-            "hook_event_name": "SessionStart",
-            "cwd": "/tmp/test",
-            "session_id": "ephemeral-session-id",
-        })
-        assert result == 0
-
     def test_session_end_is_noop(self):
         result = _run_with_input({
             "hook_event_name": "SessionEnd",
@@ -96,19 +87,45 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.get_tmux_info",
            return_value={"pane_id": "%1", "session_name": "default", "window_name": "test"})
     def test_session_start_registers(self, mock_tmux, mock_register, mock_fetch, tmp_path):
-        with patch("repowire.hooks.session_handler.Path") as mock_path_cls, \
-             patch("repowire.hooks.session_handler.CACHE_DIR", tmp_path):
-            mock_path_cls.return_value.parent = tmp_path
-            mock_path_cls.return_value.exists.return_value = False
-            mock_path_cls.__truediv__ = lambda self, other: tmp_path / other
-
+        with patch("repowire.hooks.session_handler.CACHE_DIR", tmp_path):
             result = _run_with_input({
                 "hook_event_name": "SessionStart",
-                "cwd": "/tmp/test",
+                "cwd": str(tmp_path),
                 "session_id": "abc12345-rest",
-                "model": "claude-sonnet-4-6",
             })
             assert result == 0
             mock_register.assert_called_once()
             call_args = mock_register.call_args
             assert call_args[0][0] == "abc12345"  # display_name from session_id[:8]
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch("repowire.hooks.session_handler._register_peer_http", return_value=True)
+    @patch("repowire.hooks.session_handler.get_tmux_info",
+           return_value={"pane_id": "%1", "session_name": "default", "window_name": "test"})
+    def test_second_session_start_skips_ws_hook(self, mock_tmux, mock_register, mock_fetch, tmp_path):
+        """Second SessionStart for same pane skips ws-hook spawn (PID dedup)."""
+        with patch("repowire.hooks.session_handler.CACHE_DIR", tmp_path):
+            # First call — spawns ws-hook, writes PID file
+            _run_with_input({
+                "hook_event_name": "SessionStart",
+                "cwd": str(tmp_path),
+                "session_id": "abc12345-rest",
+            })
+
+            # Verify PID file was written
+            pid_path = tmp_path / "logs" / "ws-hook-1.pid"
+            assert pid_path.exists()
+            first_pid = int(pid_path.read_text().strip())
+
+            # Second call with different session_id (ephemeral tool sub-session)
+            # Should still register peer via HTTP but skip ws-hook spawn
+            _run_with_input({
+                "hook_event_name": "SessionStart",
+                "cwd": str(tmp_path),
+                "session_id": "eph99999-rest",
+            })
+
+            # PID file should still contain the first PID (not overwritten)
+            assert int(pid_path.read_text().strip()) == first_pid
+            # Only first call registered via HTTP (second was skipped entirely)
+            assert mock_register.call_count == 1

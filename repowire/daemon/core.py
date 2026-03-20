@@ -578,6 +578,6 @@ class PeerManager:
             ]
             for pid in stale:
                 del self._peers[pid]
-                self._session_mapper.unregister_session(pid)
             if stale:
+                self._session_mapper.unregister_sessions(stale)
                 logger.info(f"lazy_repair: evicted {len(stale)} stale offline peers")
