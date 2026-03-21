@@ -59,6 +59,11 @@ def main() -> int:
     # Extract and post last turn pair for dashboard
     transcript_path = Path(transcript_path_str).expanduser().resolve()
     user_text, assistant_text = extract_last_turn_pair(transcript_path)
+    # Strip whitespace-only texts to prevent empty chat bubbles
+    if user_text and not user_text.strip():
+        user_text = None
+    if assistant_text and not assistant_text.strip():
+        assistant_text = None
     tool_calls = extract_last_turn_tool_calls(transcript_path) if assistant_text else []
     if user_text:
         _post_chat_turn(peer_display, "user", user_text)

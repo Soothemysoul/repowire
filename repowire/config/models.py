@@ -139,7 +139,7 @@ class DaemonConfig(BaseModel):
 
     # Session cleanup
     prune_max_age_hours: float = Field(
-        default=72, description="Remove session mappings older than this on startup",
+        default=24, description="Remove session mappings and offline peers older than this",
     )
 
     # Spawn settings

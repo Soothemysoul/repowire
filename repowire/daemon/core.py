@@ -59,7 +59,7 @@ class PeerManager:
         self._peers: dict[str, Peer] = {}
 
         self._lock = asyncio.Lock()
-        self._events: deque[dict[str, Any]] = deque(maxlen=100)
+        self._events: deque[dict[str, Any]] = deque(maxlen=500)
         self._events_path = Config.get_config_dir() / "events.json"
         self._events_dirty = False
         self._load_events()
