@@ -51,7 +51,7 @@ Repowire includes a "Cyber-Minimalist Control Plane" dashboard for monitoring in
 
 - **URL**: `http://localhost:8377/dashboard` (when `repowire serve` is running)
 - **Architecture**: Next.js static export served by the Python FastAPI daemon.
-- **Event Logging**: The `PeerManager` maintains an in-memory circular buffer of the last 100 communication events (queries, responses, broadcasts).
+- **Event Logging**: The `PeerManager` maintains an in-memory circular buffer of the last 500 communication events (queries, responses, broadcasts), persisted to `~/.repowire/events.json`.
 
 ### Dashboard Development
 
@@ -153,7 +153,7 @@ Repowire is a mesh network enabling AI coding agents to communicate. All message
 
 Hooks in `~/.claude/settings.json` auto-register peers and manage state:
 
-- **SessionStart** → `repowire hook session` → Registers peer, outputs `additionalContext` with peer list
+- **SessionStart** → `repowire hook session` → Registers peer, spawns ws-hook (with PID dedup to skip ephemeral sub-sessions), outputs `additionalContext` with peer list
 - **SessionEnd** → `repowire hook session` → No-op (fires spuriously between turns)
 - **UserPromptSubmit** → `repowire hook prompt` → Marks peer as BUSY
 - **Stop** → `repowire hook stop` → Extracts response from transcript, delivers to daemon via `POST /response`, marks peer ONLINE
@@ -208,7 +208,7 @@ Key files:
 - `installers/claude_code.py` - Installs/uninstalls hooks in `~/.claude/settings.json`
 - `hooks/session_handler.py` - Handles SessionStart and SessionEnd events
 - `hooks/prompt_handler.py` - Handles UserPromptSubmit (sets BUSY)
-- `hooks/stop_handler.py` - Captures response from transcript, delivers via HTTP `POST /response`
+- `hooks/stop_handler.py` - Captures response + tool calls from transcript, posts chat turns via `POST /events/chat`, delivers query response via `POST /response`
 - `hooks/notification_handler.py` - Handles idle_prompt (resets BUSY→ONLINE after interrupt)
 - `hooks/websocket_hook.py` - Persistent WebSocket connection for query/response delivery
 
@@ -370,12 +370,14 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 | `/peers/by-pane/{pane_id}` | GET | Get peer by tmux pane ID |
 | `/peers/{name}/offline` | POST | Mark peer offline, cancel pending queries |
 | `/peers/{name}/description` | POST | Set peer's task description |
+| `/peers/circle` | POST | Set peer's circle |
+| `/events/chat` | POST | Ingest chat turn from stop hook |
 | `/query` | POST | Send query, wait for response |
 | `/notify` | POST | Send notification (fire-and-forget) |
 | `/broadcast` | POST | Send to all peers |
 | `/session/update` | POST | Update peer session status (by `peer_name` or `pane_id`) |
 | `/response` | POST | Deliver response from stop hook (by `pane_id`) |
-| `/events` | GET | Get last 100 communication events |
+| `/events` | GET | Get last 500 communication events |
 | `/events/stream` | GET | SSE stream of real-time events |
 
 ## Key Design Decisions
@@ -390,7 +392,7 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 8. **TSV MCP output** - `list_peers` and `whoami` return TSV (more token-efficient than JSON for agents)
 9. **Ghost eviction** - `register_peer` evicts OFFLINE peers with same (display_name, backend) regardless of circle, cleaning up stale registrations from dead ws-hooks
 10. **Circle-preferred `from_peer` lookup** - `from_peer` is resolved preferring the target peer's circle first, preventing false circle boundary errors when sender name appears in multiple circles
-11. **Event persistence** - Events persisted to `~/.repowire/events.json`, loaded on startup. Writes debounced via `lazy_repair` cycle (not per-event). Deque maxlen=100 caps memory.
+11. **Event persistence** - Events persisted to `~/.repowire/events.json`, loaded on startup. Writes debounced via `lazy_repair` cycle (not per-event). Deque maxlen=500 caps memory.
 12. **Tool call extraction** - Stop hook extracts `tool_use` entries from Claude's transcript JSONL and includes them as `tool_calls` in `chat_turn` events. Dashboard renders them as collapsible lists per assistant turn.
 13. **SSE bridge** - Relay serves `/events/stream` SSE endpoint. Shared poller fans out to all connected browser clients. Dashboard shows "Connected"/"Disconnected" based on SSE state.
 14. **Dashboard identity** - Messages from `@dashboard` are from a human at the web control plane. Context injection tells agents to treat them as direct user instructions.
@@ -400,7 +402,9 @@ Circles are logical subnets that isolate groups of peers. Peers can only communi
 - Framework: pytest with pytest-asyncio (auto mode)
 - Tests use `tempfile` and `unittest.mock` extensively
 - Route tests use `httpx.AsyncClient` with `ASGITransport` and manually initialized deps (no lifespan)
+- WebSocket tests use `httpx-ws` with `ASGIWebSocketTransport`
 - Important: `uv tool install --force --reinstall .` is required after code changes for hooks to pick up new code (hooks run from installed package, not source)
+- 222 tests covering: routes, WebSocket, auth, query tracker, message router, hooks, config, transcript, spawn
 
 ## Integration Testing
 
