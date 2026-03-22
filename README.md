@@ -36,6 +36,25 @@ Read more about it in my blog where I describe [the context breakout problem](ht
 
 [![asciicast](https://asciinema.org/a/772201.svg)](https://asciinema.org/a/772201)
 
+## 🎉 Announcing Hosted Relay
+
+Access your dashboard from anywhere and connect agents across machines — no port forwarding, no VPN. Run `repowire setup --relay` and get a public URL instantly via [repowire.io](https://repowire.io).
+
+<p align="center">
+  <img src="images/repowire-hosted-2.png" alt="Peer grid overview" width="700" />
+</p>
+
+<details>
+<summary>More screenshots</summary>
+<br>
+<p align="center">
+  <img src="images/repowire-hosted-3.png" alt="Activity and message detail" width="700" />
+</p>
+<p align="center">
+  <img src="images/repowire-hosted-1.png" alt="Chat view with relay" width="700" />
+</p>
+</details>
+
 ## Installation
 
 **Requirements:** macOS or Linux, Python 3.10+, tmux
@@ -259,16 +278,6 @@ repowire setup --relay
 ```
 
 Open the dashboard URL from any browser — your local daemon is tunneled through the relay. No port forwarding, no VPN.
-
-<p align="center">
-  <img src="images/repowire-hosted-2.png" alt="Peer grid overview" width="700" />
-</p>
-<p align="center">
-  <img src="images/repowire-hosted-3.png" alt="Activity and message detail" width="700" />
-</p>
-<p align="center">
-  <img src="images/repowire-hosted-1.png" alt="Chat view with relay" width="700" />
-</p>
 
 **How it works:** Your daemon opens an outbound WebSocket to `relay.repowire.io`. The relay bridges messages between daemons on different machines and proxies HTTP requests (dashboard, API) back through the tunnel.
 
