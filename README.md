@@ -34,7 +34,10 @@ Read more about it in my blog where I describe [the context breakout problem](ht
 
 </details>
 
-[![asciicast](https://asciinema.org/a/772201.svg)](https://asciinema.org/a/772201)
+
+https://github.com/user-attachments/assets/e356ce7c-9454-4e41-93af-3991c6f391b9
+
+
 
 ## 🎉 Announcing Hosted Relay
 
