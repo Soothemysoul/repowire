@@ -177,8 +177,8 @@ class TelegramPeer:
             peer = data.split(":", 1)[1]
             self._reply_target = peer
             await self._tg_send(
-                f"Talking to *@{_esc(peer)}*\\. Send your message\\.",
-                _kb([[("❌ Cancel", "cancel")]]),
+                f"Now talking to *@{_esc(peer)}*\\. All messages go there\\.",
+                _kb([[("📋 Peers", "peers"), ("❌ Clear", "cancel")]]),
             )
         elif data == "cancel":
             self._reply_target = None
@@ -188,28 +188,40 @@ class TelegramPeer:
 
     async def _on_text(self, text: str) -> None:
         # Commands
-        if text in ("/start", "/peers"):
+        if text in ("/start", "/peers", "/list"):
             await self._cmd_peers()
             return
+        if text == "/clear":
+            self._reply_target = None
+            await self._tg_send("Cleared\\. No active conversation\\.")
+            return
+        if text.startswith("/switch ") or text.startswith("/select "):
+            peer = text.split(maxsplit=1)[1].strip().lstrip("@")
+            self._reply_target = peer
+            await self._tg_send(
+                f"Now talking to *@{_esc(peer)}*\\. All messages go there\\.",
+                _kb([[("📋 Peers", "peers"), ("❌ Clear", "cancel")]]),
+            )
+            return
 
-        # @peer message — explicit target
+        # @peer message — explicit target (also sets sticky)
         m = re.match(r"^@(\S+)\s+(.+)", text, re.DOTALL)
         if m:
+            self._reply_target = m.group(1)
             await self._notify(m.group(1), m.group(2))
             return
 
-        # Reply target set — send to that peer
+        # Sticky conversation — send to current peer
         if self._reply_target:
-            peer = self._reply_target
-            self._reply_target = None
-            await self._notify(peer, text)
+            await self._notify(self._reply_target, text)
             return
 
-        # Help
+        # No conversation active
         await self._tg_send(
+            "No active conversation\\.\n\n"
             "`/peers` — list peers\n"
-            "`@name msg` — notify a peer\n\n"
-            "_Or tap a button to select a peer, then type your message\\._"
+            "`/select name` — start conversation\n"
+            "`@name msg` — quick message"
         )
 
     # -- Commands --
@@ -258,10 +270,7 @@ class TelegramPeer:
                 },
             )
             if r.status_code == 200:
-                await self._tg_send(
-                    f"✓ → *@{_esc(peer)}*",
-                    _kb([[("📨 Send another", f"target:{peer}"), ("📋 Peers", "peers")]]),
-                )
+                await self._tg_send(f"✓ → *@{_esc(peer)}*")
             else:
                 detail = r.json().get("detail", r.text)
                 await self._tg_send(f"✗ {_esc(str(detail))}")
