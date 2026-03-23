@@ -252,7 +252,7 @@ class TelegramPeer:
                 if desc:
                     line += f"\n  _{_esc(desc)}_"
                 lines.append(line)
-                buttons.append([("📨 " + folder, f"target:{name}")])
+                buttons.append([("💬 " + folder, f"target:{name}")])
 
             await self._tg_send("\n".join(lines), _kb(buttons))
         except Exception as e:
