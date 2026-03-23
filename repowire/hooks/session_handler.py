@@ -154,10 +154,9 @@ def main() -> int:
                         pass_fds=(lock_fd.fileno(),),
                     )
                     pid_path.write_text(str(proc.pid))
-                    lock_fd.close()  # child inherits flock; parent releases fd
                 finally:
                     log_file.close()
-                    lock_fd.close()
+                    lock_fd.close()  # child inherits flock; parent releases fd
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
 

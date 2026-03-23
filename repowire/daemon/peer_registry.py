@@ -111,7 +111,8 @@ class PeerRegistry:
                 self._mappings[session_id] = SessionMapping(**mapping_data)
             logger.info(f"Loaded {len(self._mappings)} session mappings")
         except (json.JSONDecodeError, TypeError, ValueError, KeyError) as e:
-            backup = self._mappings_path.with_suffix(".json.corrupt")
+            backup_ts = int(time.time())
+            backup = self._mappings_path.with_suffix(f".json.corrupt.{backup_ts}")
             try:
                 self._mappings_path.rename(backup)
                 logger.error(f"Corrupt session mappings, backed up to {backup}: {e}")
