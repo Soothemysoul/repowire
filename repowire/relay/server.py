@@ -1,6 +1,6 @@
 """Relay server for cross-machine Repowire daemon-to-daemon communication.
 
-Provides:
+Provides (v0.7.0+):
 - WebSocket bridge: daemons connect via /ws/relay, messages forwarded within user scope
 - HTTP tunnel: authenticated browser sessions are proxied to a connected daemon via cookie
 - Dashboard: serves Next.js static export directly, tunnels only API calls to daemon
