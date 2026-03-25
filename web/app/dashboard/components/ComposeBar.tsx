@@ -36,8 +36,12 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
       const res = await fetch(`${apiBase}/attachments`, {
         method: "POST",
         body: formData,
+        credentials: "include",
       });
-      if (!res.ok) return null;
+      if (!res.ok) {
+        console.error("Upload failed:", res.status, await res.text().catch(() => ""));
+        return null;
+      }
       const data = await res.json();
       return data.path as string;
     } catch {
