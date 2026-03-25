@@ -127,6 +127,7 @@ class RelayClient:
                     self._build_url(),
                     open_timeout=10,
                     close_timeout=5,
+                    max_size=16 * 1024 * 1024,  # 16MB for attachment tunneling
                 ) as ws:
                     self._ws = ws
                     backoff = _INITIAL_BACKOFF
