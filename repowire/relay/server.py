@@ -60,7 +60,7 @@ _RELAY_PREFIXES = ("/api/v1/", "/d/", "/_next/")
 # API paths tunneled to the daemon (everything else is static or relay-owned)
 _TUNNEL_PREFIXES = (
     "/peers", "/events", "/query", "/notify", "/broadcast",
-    "/session", "/response", "/spawn", "/ws",
+    "/session", "/response", "/spawn", "/ws", "/attachments",
 )
 
 # Static file extensions served from web/out root (logos, favicon, images)
