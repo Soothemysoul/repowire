@@ -18,8 +18,9 @@ logger = logging.getLogger(__name__)
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
 
-# Cached: peer identity is stable for the lifetime of this MCP process
-_my_peer_name: str = Path.cwd().name
+# Cached: peer identity is stable for the lifetime of this MCP process.
+# Prefer CLAUDE_SESSION_ID[:8] (matches channel transport registration) over cwd folder name.
+_my_peer_name: str = (os.environ.get("CLAUDE_SESSION_ID") or "")[:8] or Path.cwd().name
 
 # Lazy singleton HTTP client — reused across all daemon requests
 _http_client: httpx.AsyncClient | None = None
