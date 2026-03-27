@@ -40,7 +40,7 @@ https://github.com/user-attachments/assets/e356ce7c-9454-4e41-93af-3991c6f391b9
 
 ## Installation
 
-**Requirements:** macOS or Linux, Python 3.10+, tmux, [bun](https://bun.sh) (for channel transport)
+**Requirements:** macOS or Linux, Python 3.10+, tmux
 
 ```bash
 uv tool install repowire
@@ -50,7 +50,7 @@ uv tool install repowire
 ## Quick Start
 
 ```bash
-# One-time setup — detects your Claude Code version and picks the best transport
+# One-time setup — installs hooks, MCP server, and daemon service
 repowire setup
 
 # Verify everything is running
@@ -97,30 +97,29 @@ All peers connect to a central daemon via **WebSocket**. The daemon routes addre
 
 ### Claude Code Transport
 
-On Claude Code v2.1.80+, repowire uses the native **channel transport** — an MCP server that delivers messages directly into Claude's context. Claude replies via a `reply` tool instead of transcript scraping. No tmux injection, no hooks for message delivery.
-
-```
-Claude Code ←stdio→ repowire-channel (MCP) ←WebSocket→ Daemon
-```
-
-- Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
-- Queries include `correlation_id` — Claude calls the `reply` tool to respond
-- Permission relay: approve tool use remotely from Telegram or the dashboard
-- Requires claude.ai login (not available for API/Console key auth)
-
-On older Claude Code versions, repowire falls back to **hooks + tmux injection** — the original transport that uses lifecycle hooks and `tmux send-keys` for message delivery.
-
-<details>
-<summary><strong>Legacy hooks transport</strong></summary>
-
-For Claude Code < v2.1.80 or non-claude.ai auth:
+By default, repowire uses **hooks + tmux injection** — lifecycle hooks that handle peer registration, message delivery via `tmux send-keys`, and transcript scraping for responses.
 
 - **SessionStart** — registers peer, spawns WebSocket hook, injects peer list as context
 - **UserPromptSubmit** — marks peer BUSY
 - **Stop** — extracts response from transcript, delivers query responses, posts chat turns for dashboard
 - **Notification** (idle_prompt) — resets BUSY→ONLINE after interrupt
 
-`repowire setup` auto-detects the version and installs the right transport.
+<details>
+<summary><strong>Experimental: channel transport</strong></summary>
+
+On Claude Code v2.1.80+ with claude.ai login and [bun](https://bun.sh), an experimental **channel transport** delivers messages directly into Claude's context via MCP, with no tmux injection.
+
+```bash
+repowire setup --experimental-channels
+```
+
+```
+Claude Code ←stdio→ repowire-channel (MCP) ←WebSocket→ Daemon
+```
+
+- Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
+- Claude replies via `reply` tool instead of transcript scraping
+- Requires claude.ai login (not available for API/Console key auth)
 
 </details>
 
@@ -190,8 +189,9 @@ TELEGRAM_BOT_TOKEN="..." TELEGRAM_CHAT_ID="..." repowire telegram start
 ## CLI Reference
 
 ```bash
-repowire setup                    # Auto-detect transport, install everything
+repowire setup                    # Install hooks, MCP server, daemon service
 repowire setup --relay            # Same + enable remote dashboard via repowire.io
+repowire setup --experimental-channels  # Use channel transport (needs claude.ai login + bun)
 repowire status                   # Show what's installed and running
 repowire serve                    # Run daemon in foreground
 repowire serve --relay            # Run daemon with relay connection
@@ -202,6 +202,7 @@ repowire peer list                # List peers and their status
 repowire peer prune               # Remove offline peers
 
 repowire telegram start           # Run Telegram bot (needs env vars)
+repowire slack start              # Run Slack bot (needs env vars)
 repowire uninstall                # Remove all components
 ```
 
@@ -258,7 +259,7 @@ Self-host the relay: `repowire relay start --port 8000`
 - **WebSocket auth** — set `daemon.auth_token` in config to require bearer token for connections
 - **CORS** — restricted to localhost origins (plus `repowire.io` when relay is enabled)
 - **Spawn allowlist** — `daemon.spawn.allowed_commands` and `allowed_paths` must both be non-empty for MCP spawn to work
-- **Channel gating** — channel transport requires claude.ai login; API/Console key users get hooks fallback
+- **Channel gating** — channel transport is opt-in (`--experimental-channels`), requires claude.ai login
 
 </details>
 

@@ -37,18 +37,18 @@ CI triggers PyPI publish from tags.
                                │ WebSocket /ws
             ┌──────────────────┼──────────────────┐
             │                  │                  │
-   Channel transport    Legacy transport     Other peers
-   (Claude Code 2.1.80+)  (older Claude)    (OpenCode, Telegram)
+   Hooks transport      Channel transport     Other peers
+   (default)            (experimental)       (OpenCode, Telegram, Slack)
             │                  │                  │
-   channel/server.ts    hooks/ws-hook.py    telegram/bot.py
-   (MCP stdio)          (tmux injection)    opencode plugin
+   hooks/ws-hook.py    channel/server.ts    telegram/bot.py
+   (tmux injection)    (MCP stdio)          slack/bot.py, opencode
 ```
 
 The daemon is the single routing hub. It doesn't care how a peer connects — all peers speak the same WebSocket protocol. The transport layer is client-side only.
 
 ### Key modules
 
-- `channel/server.ts` — **primary Claude Code transport**: MCP channel with reply tool, permission relay
+- `channel/server.ts` — **experimental** Claude Code transport: MCP channel with reply tool, permission relay
 - `daemon/peer_registry.py` — peer state, circle access, events, lazy_repair, ghost eviction
 - `daemon/message_router.py` — routes queries/notifications/broadcasts via WebSocket
 - `daemon/query_tracker.py` — correlation ID tracking, asyncio Futures (async-locked)
@@ -56,29 +56,12 @@ The daemon is the single routing hub. It doesn't care how a peer connects — al
 - `mcp/server.py` — MCP tools (list_peers, ask_peer, notify_peer, etc.)
 - `relay/server.py` — hosted relay at repowire.io (WS bridge + HTTP tunnel)
 - `telegram/bot.py` — mobile mesh control via Telegram inline buttons
-- `hooks/` — **legacy** Claude Code transport (session, stop, prompt, notification, websocket_hook)
+- `hooks/` — **default** Claude Code transport (session, stop, prompt, notification, websocket_hook)
+- `slack/bot.py` — Slack bot peer via Socket Mode
 
 ## Transports
 
-### Channel (primary — Claude Code v2.1.80+)
-
-```
-Claude Code ←stdio→ channel/server.ts ←WebSocket→ Daemon
-```
-
-- Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
-- Queries include `correlation_id` — Claude calls the `reply` tool to respond
-- Permission relay: forwards tool approval prompts to Telegram/dashboard
-- Requires claude.ai login (not API/Console key)
-- `repowire setup` auto-detects version and installs channel or hooks
-
-How it works:
-1. Claude Code spawns `server.ts` as MCP subprocess (stdio)
-2. `server.ts` connects to daemon via WebSocket, registers as peer
-3. Incoming messages → `notifications/claude/channel` → Claude sees `<channel>` tags
-4. Claude replies via `reply` MCP tool → `server.ts` sends WS response → daemon resolves query
-
-### Hooks (legacy — older Claude Code or API/Console auth)
+### Hooks (default)
 
 ```
 Claude Code → hooks → websocket_hook.py ←WebSocket→ Daemon
@@ -90,17 +73,21 @@ Claude Code → hooks → websocket_hook.py ←WebSocket→ Daemon
 - **UserPromptSubmit** → marks BUSY
 - **Notification** (idle_prompt) → resets ONLINE
 
-In channel mode, only the Stop hook is kept (for dashboard chat_turn events).
-
 Key files: `session_handler.py`, `stop_handler.py`, `prompt_handler.py`, `notification_handler.py`, `websocket_hook.py`, `utils.py`
 
-### Setup auto-detection
+### Channel (experimental — `repowire setup --experimental-channels`)
 
-`repowire setup` checks:
-1. Claude Code version ≥ 2.1.80? → channel transport
-2. `bun` runtime available? → channel transport
-3. Otherwise → hooks transport (with clear message why)
+```
+Claude Code ←stdio→ channel/server.ts ←WebSocket→ Daemon
+```
 
+- Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
+- Queries include `correlation_id` — Claude calls the `reply` tool to respond
+- Permission relay: forwards tool approval prompts to Telegram/dashboard
+- Requires claude.ai login (not API/Console key), Claude Code v2.1.80+, bun runtime
+- Opt-in only: `repowire setup --experimental-channels`
+
+In channel mode, only the Stop hook is kept (for dashboard chat_turn events).
 `install_hooks(channel_mode=True)` installs only the Stop hook when using channel transport.
 
 ## Design Philosophy: Lazy Repair
