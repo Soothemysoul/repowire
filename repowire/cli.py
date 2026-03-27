@@ -64,7 +64,11 @@ def serve(host: str, port: int, relay: bool) -> None:
 @main.command()
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
 @click.option("--relay", is_flag=True, help="Enable hosted relay via repowire.io")
-def setup(no_service: bool, relay: bool) -> None:
+@click.option(
+    "--experimental-channels", is_flag=True,
+    help="Use channel transport (experimental, requires claude.ai login and bun)",
+)
+def setup(no_service: bool, relay: bool, experimental_channels: bool) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
     import shutil
 
@@ -74,7 +78,7 @@ def setup(no_service: bool, relay: bool) -> None:
 
     # Detect and set up Claude Code if claude CLI available
     if shutil.which("claude"):
-        _setup_claude_code()
+        _setup_claude_code(use_channels=experimental_channels)
         agents_setup.append("claude-code")
 
     # Detect and set up OpenCode if opencode CLI or config exists
@@ -323,21 +327,24 @@ def _cleanup_legacy_artifacts() -> None:
             console.print(f"[green]\u2713[/] Removed legacy {dirname}/ directory")
 
 
-def _setup_claude_code() -> None:
+def _setup_claude_code(use_channels: bool = False) -> None:
     """Setup for Claude Code agent type."""
     import subprocess
 
     from repowire.installers.claude_code import install_channel, install_hooks
 
-    # Try channel transport first (Claude Code v2.1.80+ with bun)
-    channel_ok, channel_msg = install_channel()
-    if channel_ok:
-        install_hooks(channel_mode=True)  # minimal Stop hook for dashboard
-        console.print(f"[green]✓[/] {channel_msg}")
+    if use_channels:
+        channel_ok, channel_msg = install_channel()
+        if channel_ok:
+            install_hooks(channel_mode=True)  # minimal Stop hook for dashboard
+            console.print(f"[green]✓[/] {channel_msg}")
+        else:
+            install_hooks()
+            console.print(f"[yellow]![/] {channel_msg}")
+            console.print("[green]✓[/] Claude Code hooks installed (fallback)")
     else:
-        install_hooks()  # full hooks for legacy transport
-        console.print(f"[yellow]![/] {channel_msg}")
-        console.print("[green]✓[/] Claude Code hooks installed (legacy transport)")
+        install_hooks()
+        console.print("[green]✓[/] Claude Code hooks installed")
 
     # Remove existing repowire MCP server if present
     subprocess.run(["claude", "mcp", "remove", "repowire"], capture_output=True)

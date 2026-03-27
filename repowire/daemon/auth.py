@@ -45,12 +45,7 @@ async def verify_api_key(
 
 
 class RequireAuth:
-    """Dependency that requires authentication when relay mode is enabled.
-
-    TODO(relay): currently auth is only enforced in relay mode. When going
-    hosted, enforce auth on all endpoints (spawn, messages, peers) regardless
-    of relay flag. Grep for TODO(relay) to find all related sites.
-    """
+    """Dependency that requires authentication when relay mode is enabled."""
 
     async def __call__(
         self,
