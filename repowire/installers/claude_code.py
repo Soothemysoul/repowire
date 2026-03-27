@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -159,6 +160,13 @@ def install_channel() -> tuple[bool, str]:
     - Channel server not found
     - claude.ai login required (detected at runtime)
     """
+    # Channel transport requires claude.ai login — not API/Console key auth
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        return False, (
+            "API key auth detected (ANTHROPIC_API_KEY set). "
+            "Channel transport requires claude.ai login. Using hooks instead."
+        )
+
     if not _has_bun():
         return False, "bun runtime not found. Install from https://bun.sh"
 
