@@ -1,6 +1,6 @@
 """Unified WebSocket endpoint for all agent types.
 
-Handles both Claude Code and OpenCode connections via a single WebSocket protocol.
+Handles Claude Code, OpenCode, and Codex connections via a single WebSocket protocol.
 """
 
 from __future__ import annotations
@@ -102,7 +102,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.send_json(
                 {
                     "type": "error",
-                    "error": "Invalid backend: must be 'claude-code' or 'opencode'",
+                    "error": "Invalid backend: must be 'claude-code', 'opencode', or 'codex'",
                 }
             )
             await websocket.close(code=4002, reason="Invalid backend")
