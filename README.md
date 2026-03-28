@@ -263,6 +263,30 @@ Self-host the relay: `repowire relay start --port 8000`
 
 </details>
 
+## Uninstall
+
+```bash
+# Remove hooks, MCP server, channel transport, and daemon service
+repowire uninstall
+
+# Remove the package itself
+uv tool uninstall repowire
+# or: pip uninstall repowire
+```
+
+`repowire uninstall` removes:
+- Claude Code hooks from `~/.claude/settings.json`
+- Channel transport from `~/.claude.json` (if installed)
+- MCP server registration (`claude mcp remove repowire`)
+- OpenCode plugin (if installed)
+- Daemon launchd/systemd service
+
+**Not removed automatically** (contains your data/config):
+- `~/.repowire/` — config, session mappings, events, attachments
+- Relay API key in `~/.repowire/config.yaml`
+
+To fully clean up: `rm -rf ~/.repowire`
+
 ## License
 
 MIT

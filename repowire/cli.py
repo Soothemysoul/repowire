@@ -202,7 +202,7 @@ def _uninstall_claude_code() -> None:
     """Uninstall Claude Code components."""
     import subprocess
 
-    from repowire.installers.claude_code import uninstall_hooks
+    from repowire.installers.claude_code import uninstall_channel, uninstall_hooks
 
     # Remove hooks
     try:
@@ -212,6 +212,13 @@ def _uninstall_claude_code() -> None:
             console.print("[dim]Claude Code hooks not installed[/]")
     except Exception as e:
         console.print(f"[yellow]![/] Failed to remove hooks: {e}")
+
+    # Remove channel transport
+    try:
+        if uninstall_channel():
+            console.print("[green]✓[/] Channel transport removed")
+    except Exception:
+        pass
 
     # Remove MCP server
     result = subprocess.run(
