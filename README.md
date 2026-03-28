@@ -43,8 +43,11 @@ https://github.com/user-attachments/assets/e356ce7c-9454-4e41-93af-3991c6f391b9
 **Requirements:** macOS or Linux, Python 3.10+, tmux
 
 ```bash
-uv tool install repowire
-# or: pip install repowire
+# One-liner (detects uv/pipx/pip, runs interactive setup)
+curl -sSf https://raw.githubusercontent.com/prassanna-ravishankar/repowire/main/install.sh | sh
+
+# Or install manually
+uv tool install repowire    # or: pipx install repowire / pip install repowire
 ```
 
 ## Quick Start
@@ -163,7 +166,8 @@ For remote access: `repowire setup --relay` connects your daemon to [repowire.io
 Control your mesh from your phone. A Telegram bot registers as a peer — notifications from agents appear in your chat, messages you send get routed to peers.
 
 ```bash
-TELEGRAM_BOT_TOKEN="..." TELEGRAM_CHAT_ID="..." repowire telegram start
+# Tokens configured via `repowire setup`, or via env vars:
+repowire telegram start
 ```
 
 - `/peers` — shows online peers with inline buttons
@@ -201,9 +205,10 @@ repowire peer new . --circle dev  # Spawn with custom circle
 repowire peer list                # List peers and their status
 repowire peer prune               # Remove offline peers
 
-repowire telegram start           # Run Telegram bot (needs env vars)
-repowire slack start              # Run Slack bot (needs env vars)
-repowire uninstall                # Remove all components
+repowire telegram start           # Run Telegram bot (config or env vars)
+repowire slack start              # Run Slack bot (config or env vars)
+repowire update                   # Upgrade package, reinstall hooks, restart daemon
+repowire uninstall                # Remove all components (--yes to skip prompts)
 ```
 
 ## Configuration
@@ -229,6 +234,15 @@ relay:
   enabled: true                     # Connect to hosted relay
   url: "wss://repowire.io"
   api_key: "rw_..."                 # Auto-generated on first `repowire serve --relay`
+
+telegram:                           # Optional — configured via `repowire setup`
+  bot_token: "..."
+  chat_id: "..."
+
+slack:                              # Optional — configured via `repowire setup`
+  bot_token: "xoxb-..."
+  app_token: "xapp-..."
+  channel_id: "C..."
 ```
 
 Peers auto-register via WebSocket on session start — no manual config needed.
