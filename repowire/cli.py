@@ -61,6 +61,75 @@ def serve(host: str, port: int, relay: bool) -> None:
 # =============================================================================
 
 
+def _mask_token(token: str) -> str:
+    """Mask a token for display, showing only the last 4 chars."""
+    if len(token) <= 8:
+        return "****"
+    return "****" + token[-4:]
+
+
+def _is_interactive(non_interactive: bool) -> bool:
+    """Check if we should run interactively."""
+    import sys
+
+    return not non_interactive and sys.stdin.isatty()
+
+
+def _detect_package_manager() -> str | None:
+    """Detect how repowire was installed: 'uv', 'pipx', or 'pip'."""
+    import shutil
+
+    repowire_bin = shutil.which("repowire")
+    if not repowire_bin:
+        return None
+    rp = str(Path(repowire_bin).resolve())
+    if "uv" in rp and shutil.which("uv"):
+        return "uv"
+    if "pipx" in rp and shutil.which("pipx"):
+        return "pipx"
+    if shutil.which("pip"):
+        return "pip"
+    return None
+
+
+_PKG_COMMANDS: dict[str, dict[str, list[str]]] = {
+    "uv": {
+        "upgrade": ["uv", "tool", "upgrade", "repowire"],
+        "uninstall": ["uv", "tool", "uninstall", "repowire"],
+    },
+    "pipx": {
+        "upgrade": ["pipx", "upgrade", "repowire"],
+        "uninstall": ["pipx", "uninstall", "repowire"],
+    },
+    "pip": {
+        "upgrade": ["pip", "install", "-U", "repowire"],
+        "uninstall": ["pip", "uninstall", "-y", "repowire"],
+    },
+}
+
+
+def _prompt_bot_config(
+    name: str,
+    config_section: object,
+    fields: list[tuple[str, str]],
+) -> None:
+    """Prompt user to configure a bot integration. Handles existing config display."""
+    token_field = fields[0][0]  # first field is always the primary token
+    has_config = bool(getattr(config_section, token_field, None))
+    if has_config:
+        masked = _mask_token(getattr(config_section, token_field))
+        console.print(f"[dim]{name} configured (token: {masked})[/]")
+        if click.confirm(f"  Reconfigure {name}?", default=False):
+            has_config = False
+    if not has_config and click.confirm(f"Configure {name} bot?", default=False):
+        for field_name, prompt_text in fields:
+            hide = "token" in field_name
+            setattr(config_section, field_name, click.prompt(
+                f"  {prompt_text}", hide_input=hide,
+            ))
+        console.print(f"[green]✓[/] {name} configured")
+
+
 @main.command()
 @click.option("--no-service", is_flag=True, help="Skip daemon service installation")
 @click.option("--relay", is_flag=True, help="Enable hosted relay via repowire.io")
@@ -68,9 +137,17 @@ def serve(host: str, port: int, relay: bool) -> None:
     "--experimental-channels", is_flag=True,
     help="Use channel transport (experimental, requires claude.ai login and bun)",
 )
-def setup(no_service: bool, relay: bool, experimental_channels: bool) -> None:
+@click.option("--non-interactive", is_flag=True, help="Skip prompts, use flags only")
+def setup(
+    no_service: bool, relay: bool, experimental_channels: bool, non_interactive: bool
+) -> None:
     """One-time setup: install hooks/plugins, MCP server, and daemon service."""
     import shutil
+
+    from repowire.config.models import load_config
+
+    interactive = _is_interactive(non_interactive)
+    config = load_config()
 
     _cleanup_legacy_artifacts()
 
@@ -78,7 +155,14 @@ def setup(no_service: bool, relay: bool, experimental_channels: bool) -> None:
 
     # Detect and set up Claude Code if claude CLI available
     if shutil.which("claude"):
-        _setup_claude_code(use_channels=experimental_channels)
+        # Channel transport: flag or interactive prompt
+        use_channels = experimental_channels
+        if not use_channels and interactive:
+            use_channels = click.confirm(
+                "Use experimental channel transport? (claude.ai login + bun)",
+                default=False,
+            )
+        _setup_claude_code(use_channels=use_channels)
         agents_setup.append("claude-code")
 
     # Detect and set up OpenCode if opencode CLI or config exists
@@ -93,16 +177,32 @@ def setup(no_service: bool, relay: bool, experimental_channels: bool) -> None:
 
     console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
 
-    # Enable relay if requested
-    if relay:
-        from repowire.config.models import load_config
-
-        config = load_config()
+    # Relay: flag or interactive prompt
+    enable_relay = relay
+    if not enable_relay and interactive:
+        enable_relay = click.confirm(
+            "Connect to hosted relay at repowire.io for remote access?", default=False
+        )
+    if enable_relay:
         config.relay.enabled = True
         config.relay.ensure_api_key()
-        config.save()
         console.print("[green]✓[/] Relay enabled")
         console.print(f"  Dashboard: {config.relay.dashboard_url}")
+
+    # Bot integrations: interactive prompts
+    if interactive:
+        _prompt_bot_config("Telegram", config.telegram, [
+            ("bot_token", "Bot token"),
+            ("chat_id", "Chat ID"),
+        ])
+        _prompt_bot_config("Slack", config.slack, [
+            ("bot_token", "Bot token (xoxb-...)"),
+            ("app_token", "App token (xapp-...)"),
+            ("channel_id", "Channel ID (C...)"),
+        ])
+
+    # Save config
+    config.save()
 
     # Install daemon as system service
     if not no_service:
@@ -125,13 +225,10 @@ def setup(no_service: bool, relay: bool, experimental_channels: bool) -> None:
         console.print("Run 'repowire serve' to start the daemon manually.")
     else:
         console.print("Daemon is running. Restart your IDE to use Repowire.")
-    console.print("")
-    console.print("[dim]To allow MCP spawn_peer, add to ~/.repowire/config.yaml:[/]")
-    console.print("[dim]  daemon:[/]")
-    console.print("[dim]    spawn:[/]")
-    console.print("[dim]      allowed_commands: [claude]         # exact match[/]")
-    console.print("[dim]      allowed_paths: [~/git, ~/projects] # path must be under one[/]")
-    console.print("[dim]  (both lists must be set; spawn is disabled by default)[/]")
+    console.print(
+        "[dim]To enable spawn_peer, configure allowed_commands and "
+        "allowed_paths in ~/.repowire/config.yaml[/]"
+    )
 
 
 @main.command(name="build-ui")
@@ -173,8 +270,13 @@ def build_ui() -> None:
 
 
 @main.command()
-def uninstall() -> None:
-    """Remove all repowire components: hooks, MCP server, and daemon service."""
+@click.option("--yes", "-y", is_flag=True, help="Skip confirmation prompts")
+def uninstall(yes: bool) -> None:
+    """Remove all repowire components: hooks, MCP server, daemon service, and optionally config."""
+    import shutil
+    import subprocess
+
+    from repowire.config.models import Config
     from repowire.service.installer import get_service_status, uninstall_service
 
     console.print("[cyan]Uninstalling repowire...[/]")
@@ -193,6 +295,20 @@ def uninstall() -> None:
     # Uninstall all agent components (try both)
     _uninstall_claude_code()
     _uninstall_opencode()
+
+    # Remove config directory
+    config_dir = Config.get_config_dir()
+    if config_dir.exists():
+        if yes or click.confirm("Remove ~/.repowire/ (config, logs, attachments)?", default=False):
+            shutil.rmtree(config_dir)
+            console.print("[green]✓[/] Removed ~/.repowire/")
+
+    # Offer to uninstall the package itself
+    pkg_mgr = _detect_package_manager()
+    if pkg_mgr:
+        if yes or click.confirm(f"Uninstall repowire package via {pkg_mgr}?", default=False):
+            subprocess.run(_PKG_COMMANDS[pkg_mgr]["uninstall"])
+            console.print(f"[green]✓[/] Package removed via {pkg_mgr}")
 
     console.print("")
     console.print("[green]Uninstall complete![/]")
@@ -242,6 +358,50 @@ def _uninstall_opencode() -> None:
             console.print("[dim]OpenCode plugin not installed[/]")
     except Exception as e:
         console.print(f"[yellow]![/] Failed to remove OpenCode plugin: {e}")
+
+
+@main.command()
+def update() -> None:
+    """Update repowire to the latest version, reinstall hooks, restart daemon."""
+    import shutil
+    import subprocess
+
+    from repowire.installers.claude_code import check_channel_installed
+
+    old_version = __version__
+
+    pkg_mgr = _detect_package_manager()
+    if not pkg_mgr:
+        console.print("[red]Cannot detect how repowire was installed.[/]")
+        console.print("Update manually: uv tool upgrade repowire / pip install -U repowire")
+        return
+
+    # Upgrade package
+    console.print(f"[cyan]Upgrading via {pkg_mgr}...[/]")
+    result = subprocess.run(
+        _PKG_COMMANDS[pkg_mgr]["upgrade"], capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        console.print(f"[red]Upgrade failed:[/] {result.stderr[:200]}")
+        return
+    console.print(f"[green]✓[/] Upgraded (was {old_version})")
+
+    # Reinstall hooks (non-interactive, preserving current channel mode)
+    if shutil.which("claude"):
+        _setup_claude_code(use_channels=check_channel_installed())
+
+    # Restart daemon service if running
+    from repowire.service.installer import get_service_status, restart_service
+
+    status = get_service_status()
+    if status.get("running"):
+        success, msg = restart_service()
+        if success:
+            console.print("[green]✓[/] Daemon service restarted")
+        else:
+            console.print(f"[yellow]![/] Service restart: {msg}")
+
+    console.print("[green]Update complete![/]")
 
 
 @main.command()

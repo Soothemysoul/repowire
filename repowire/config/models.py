@@ -153,6 +153,21 @@ class LoggingConfig(BaseModel):
     file: str | None = Field(None, description="Log file path")
 
 
+class TelegramConfig(BaseModel):
+    """Telegram bot configuration."""
+
+    bot_token: str | None = Field(None, description="Telegram bot token")
+    chat_id: str | None = Field(None, description="Telegram chat ID")
+
+
+class SlackConfig(BaseModel):
+    """Slack bot configuration."""
+
+    bot_token: str | None = Field(None, description="Slack bot token (xoxb-...)")
+    app_token: str | None = Field(None, description="Slack app token (xapp-...)")
+    channel_id: str | None = Field(None, description="Slack channel ID (C...)")
+
+
 class Config(BaseModel):
     """Main Repowire configuration."""
 
@@ -162,6 +177,8 @@ class Config(BaseModel):
     relay: RelayConfig = Field(default_factory=RelayConfig)
     peers: dict[str, PeerConfig] = Field(default_factory=dict)  # legacy, kept for compat
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    telegram: TelegramConfig = Field(default_factory=TelegramConfig)
+    slack: SlackConfig = Field(default_factory=SlackConfig)
 
     @classmethod
     def get_config_dir(cls) -> Path:
@@ -174,15 +191,18 @@ class Config(BaseModel):
         return cls.get_config_dir() / "config.yaml"
 
     def save(self) -> None:
-        """Save configuration to file."""
+        """Save configuration to file atomically (write tmp + rename, 0600 perms)."""
         config_dir = self.get_config_dir()
         config_dir.mkdir(parents=True, exist_ok=True)
 
         config_path = self.get_config_path()
+        tmp_path = config_path.with_suffix(".yaml.tmp")
         data = self.model_dump()
 
-        with open(config_path, "w") as f:
+        with open(tmp_path, "w") as f:
             yaml.safe_dump(data, f, default_flow_style=False)
+        tmp_path.chmod(0o600)
+        tmp_path.replace(config_path)
 
     def get_peer(self, name: str) -> PeerConfig | None:
         """Get a peer by name (legacy config lookup)."""
