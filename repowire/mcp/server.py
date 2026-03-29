@@ -28,6 +28,9 @@ _http_client: httpx.AsyncClient | None = None
 # Cached peer name from pane-based lookup (stable for MCP process lifetime)
 _cached_peer_name: str | None = None
 
+# Lazy registration: ensure peer is registered on first MCP tool use
+_registered: bool = False
+
 
 def _get_http_client() -> httpx.AsyncClient:
     global _http_client
@@ -75,6 +78,30 @@ async def _get_my_peer_name() -> str:
     return _my_peer_name
 
 
+async def _ensure_registered() -> None:
+    """Lazy-register this peer with the daemon on first MCP tool use.
+
+    Ensures Codex/Gemini peers appear in the mesh even when SessionStart
+    hooks don't fire (e.g. one-shot prompt mode).
+    """
+    global _registered
+    if _registered:
+        return
+    _registered = True
+    name = await _get_my_peer_name()
+    backend = os.environ.get("REPOWIRE_BACKEND", "claude-code")
+    try:
+        await daemon_request("POST", "/peers", {
+            "name": name,
+            "display_name": name,
+            "path": str(Path.cwd()),
+            "circle": "default",
+            "backend": backend,
+        })
+    except Exception:
+        pass  # Best-effort — daemon may be down or peer already registered
+
+
 def create_mcp_server() -> FastMCP:
     """Create the MCP server."""
     mcp = FastMCP("repowire")
@@ -103,6 +130,7 @@ def create_mcp_server() -> FastMCP:
 
         Returns TSV with columns: peer_id, name, project, circle, status, path, machine, description
         """
+        await _ensure_registered()
         result = await daemon_request("GET", "/peers")
         peers = result.get("peers", [])
         rows = [tsv_header]
@@ -202,6 +230,7 @@ def create_mcp_server() -> FastMCP:
 
         Returns TSV with columns: peer_id, name, project, circle, status, path, machine, description
         """
+        await _ensure_registered()
         pane_id = get_pane_id()
         if pane_id:
             try:
