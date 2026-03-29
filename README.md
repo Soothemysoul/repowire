@@ -80,7 +80,7 @@ The agent uses the `ask_peer` tool, backend responds, and you get the answer bac
 All peers connect to a central daemon via **WebSocket**. The daemon routes addressed messages between peers — no pub/sub, no topics. Messages go from peer A to peer B by name.
 
 <p align="center">
-  <img src="images/repowire-arch.png" alt="Repowire architecture" width="700" />
+  <img src="images/repowire-arch.webp" alt="Repowire architecture" width="700" />
 </p>
 
 **Message types:**
