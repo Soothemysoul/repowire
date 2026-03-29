@@ -34,6 +34,7 @@ export interface Event {
   text: string;
   status?: "pending" | "success" | "error" | "blocked";
   peer?: string;
+  peer_id?: string;
   role?: "user" | "assistant";
   new_status?: "online" | "busy" | "offline";
   query_id?: string;

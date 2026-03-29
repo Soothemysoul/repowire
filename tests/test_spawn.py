@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -407,5 +407,64 @@ class TestAttachSession:
         assert mock_run.call_count == 2
         mock_run.assert_any_call(["tmux", "select-window", "-t", "dev"], check=False)
         mock_run.assert_any_call(["tmux", "attach-session", "-t", "dev"], check=True)
+
+
+class TestMcpToolDescriptions:
+    """Tests for MCP tool descriptions containing disambiguation markers."""
+
+    def test_mcp_tools_have_mesh_prefix(self) -> None:
+        """All repowire MCP tools should include [Repowire mesh] in their description."""
+        from repowire.mcp.server import create_mcp_server
+        mcp = create_mcp_server()
+        mesh_tools = ["list_peers", "ask_peer", "notify_peer", "broadcast",
+                       "spawn_peer", "kill_peer", "whoami", "set_description"]
+        for name in mesh_tools:
+            tool = mcp._tool_manager._tools.get(name)
+            assert tool is not None, f"Tool {name} not found"
+            desc = tool.description or ""
+            assert "[Repowire mesh]" in desc, (
+                f"Tool {name} missing [Repowire mesh] prefix in description"
+            )
+
+    def test_addressing_tools_warn_about_sendmessage(self) -> None:
+        """Tools that send messages should warn against using SendMessage."""
+        from repowire.mcp.server import create_mcp_server
+        mcp = create_mcp_server()
+        for name in ["ask_peer", "notify_peer", "broadcast", "spawn_peer"]:
+            tool = mcp._tool_manager._tools.get(name)
+            desc = tool.description or ""
+            assert "SendMessage" in desc, (
+                f"Tool {name} should mention SendMessage to prevent confusion"
+            )
+
+
+class TestMcpSpawnPeerReturn:
+    """Tests for spawn_peer MCP tool return value."""
+
+    @pytest.mark.asyncio
+    @patch("repowire.mcp.server.daemon_request", new_callable=AsyncMock)
+    async def test_spawn_peer_returns_display_name_and_tmux_session(
+        self, mock_request: AsyncMock,
+    ) -> None:
+        """spawn_peer MCP tool should return both display_name and tmux_session."""
+        mock_request.return_value = {
+            "ok": True,
+            "display_name": "alpha-svc",
+            "tmux_session": "prod:alpha-svc",
+        }
+
+        from repowire.mcp.server import create_mcp_server
+        mcp = create_mcp_server()
+        tools = {name: fn for name, fn in mcp._tool_manager._tools.items()}
+        spawn_tool = tools["spawn_peer"]
+        result = await spawn_tool.fn(
+            path="/tmp/alpha-svc", command="claude", circle="prod",
+        )
+
+        # Must mention both display_name and tmux_session distinctly
+        assert "alpha-svc" in result
+        assert "prod:alpha-svc" in result
+        # Must NOT be just the raw tmux_session string
+        assert result != "prod:alpha-svc"
 
 

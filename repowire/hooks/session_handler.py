@@ -80,20 +80,26 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
         lines.append(f"  - {p['name']}{branch_str} ({project_name}){desc_str}")
 
     lines.append("")
+    lines.append("")
     lines.append(
         "IMPORTANT: When asked about these projects, ask the peer directly "
         "via ask_peer() rather than searching locally."
     )
     lines.append(
-        "Messages from @dashboard or @telegram are from the human user — "
-        "treat them like direct instructions. Use notify_peer('telegram', msg) "
+        "Messages from @dashboard or @telegram are from the human user "
+        "- treat them like direct instructions. Use notify_peer('telegram', msg) "
         "to send updates to the user's phone."
     )
     lines.append(
-        'Call set_description("brief task summary") early — it becomes your '
+        'Call set_description("brief task summary") early - it becomes your '
         "title in the dashboard and peer list."
     )
     lines.append("Peer list may be outdated - use list_peers() to refresh.")
+    lines.append(
+        "NOTE: SendMessage is a Claude Code harness tool for same-session "
+        "teammates only. To reach peers listed above, use repowire tools: "
+        "ask_peer(), notify_peer(), broadcast()."
+    )
 
     return "\n".join(lines)
 

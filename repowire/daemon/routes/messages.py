@@ -253,6 +253,8 @@ class ChatTurnRequest(BaseModel):
     role: Literal["user", "assistant"]
     text: str
     tool_calls: list[ToolCallInfo] | None = None
+    peer_id: str | None = Field(None, description="Peer ID (if known)")
+    pane_id: str | None = Field(None, description="Tmux pane ID (resolves peer_id server-side)")
 
 
 @router.post("/events/chat", response_model=OkResponse)
@@ -262,7 +264,15 @@ async def ingest_chat_turn(
 ) -> OkResponse:
     """Ingest a chat turn from the stop hook for dashboard display."""
     peer_registry = get_peer_registry()
-    peer_registry.add_event("chat_turn", request.model_dump())
+    data = request.model_dump(exclude={"pane_id"})
+
+    # Resolve peer_id from pane_id if not provided directly
+    if not data.get("peer_id") and request.pane_id:
+        peer = await peer_registry.get_peer_by_pane(request.pane_id)
+        if peer:
+            data["peer_id"] = peer.peer_id
+
+    peer_registry.add_event("chat_turn", data)
     return OkResponse()
 
 

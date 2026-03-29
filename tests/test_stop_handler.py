@@ -121,6 +121,29 @@ class TestStopHandler:
     @patch("repowire.hooks.stop_handler.daemon_post")
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
+    def test_chat_turn_includes_pane_id(self, mock_pane, mock_status, mock_post, tmp_path):
+        """Chat turn payloads should include pane_id for server-side peer_id resolution."""
+        tp = _make_transcript(tmp_path, [
+            {"type": "user", "message": {"content": "Hi"}},
+            {"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "Hello!"},
+            ]}},
+        ])
+        _run_hook({
+            "cwd": str(tmp_path),
+            "session_id": "abc12345-rest",
+            "transcript_path": str(tp),
+        })
+
+        chat_calls = [c for c in mock_post.call_args_list if c[0][0] == "/events/chat"]
+        assert len(chat_calls) >= 1
+        for call in chat_calls:
+            payload = call[0][1]
+            assert payload["pane_id"] == "%42"
+
+    @patch("repowire.hooks.stop_handler.daemon_post")
+    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
+    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
     def test_gemini_after_agent_with_final_response(self, mock_pane, mock_status, mock_post):
         """Test Gemini's AfterAgent hook which provides final_response but no transcript_path."""
         _run_hook({

@@ -40,12 +40,18 @@ def _pop_pending_cid(pane_id: str) -> str | None:
 
 
 def _post_chat_turn(
-    peer_name: str, role: str, text: str, tool_calls: list[dict[str, str]] | None = None,
+    peer_name: str,
+    role: str,
+    text: str,
+    tool_calls: list[dict[str, str]] | None = None,
+    pane_id: str | None = None,
 ) -> None:
     """Post a chat turn to the daemon for dashboard display. Best-effort."""
     payload: dict = {"peer": peer_name, "role": role, "text": text}
     if tool_calls:
         payload["tool_calls"] = tool_calls
+    if pane_id:
+        payload["pane_id"] = pane_id
     daemon_post("/events/chat", payload)
 
 
@@ -98,9 +104,11 @@ def main(backend: str = "claude-code") -> int:
         assistant_text = None
 
     if user_text:
-        _post_chat_turn(peer_display, "user", user_text)
+        _post_chat_turn(peer_display, "user", user_text, pane_id=pane_id)
     if assistant_text:
-        _post_chat_turn(peer_display, "assistant", assistant_text, tool_calls or None)
+        _post_chat_turn(
+            peer_display, "assistant", assistant_text, tool_calls or None, pane_id=pane_id,
+        )
 
     # Deliver response to daemon for query resolution
     if pane_id and assistant_text:

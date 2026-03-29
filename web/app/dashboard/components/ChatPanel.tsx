@@ -51,14 +51,15 @@ export function ChatPanel({ peer, events }: ChatPanelProps) {
     return events
       .filter((e) => {
         if (e.type === "chat_turn") {
-          // Match session ID or folder name (legacy events use folder name)
+          // Prefer peer_id match (unambiguous), fall back to name match for legacy events
+          if (e.peer_id) return e.peer_id === peer.peer_id;
           return isPeerName(e.peer) || e.peer === projectName;
         }
-        // Protocol events use session IDs — strict match only
+        // Protocol events use session IDs -- strict match only
         return isPeerName(e.from) || isPeerName(e.to);
       })
       .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  }, [peer.name, peer.display_name, projectName, events]);
+  }, [peer.peer_id, peer.name, peer.display_name, projectName, events]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

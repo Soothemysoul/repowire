@@ -133,9 +133,12 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool()
     async def list_peers() -> str:
-        """List all registered peers in the mesh.
+        """[Repowire mesh] List all peers across projects and machines.
 
-        Returns TSV with columns: peer_id, name, project, circle, status, path, machine, description
+        Returns TSV: peer_id, name, project, circle, status, path, machine, description.
+        These are cross-project peers reachable via ask_peer/notify_peer. Do NOT
+        use SendMessage to contact them -- SendMessage is a Claude Code harness
+        tool for same-session teammates only.
         """
         await _ensure_registered()
         result = await daemon_request("GET", "/peers")
@@ -147,15 +150,19 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool()
     async def ask_peer(peer_name: str, query: str, circle: str | None = None) -> str:
-        """Ask a peer a question and wait for their response.
+        """[Repowire mesh] Ask a peer in another project and wait for response.
 
-        For complex questions that may take a long time, consider using
-        notify_peer instead — the peer can notify you back when ready.
+        Reaches peers across different projects and machines via the repowire
+        daemon. For complex questions that may take a long time, consider using
+        notify_peer instead.
+
+        Do NOT use SendMessage to reach repowire peers. SendMessage is a Claude
+        Code harness tool for same-session teammates only.
 
         Args:
             peer_name: Name of the peer to ask (e.g., "backend", "frontend")
             query: The question or request to send
-            circle: Circle to scope the lookup (optional — required when multiple
+            circle: Circle to scope the lookup (optional, required when multiple
                     peers share the same name in different circles)
 
         Returns:
@@ -176,15 +183,18 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool()
     async def notify_peer(peer_name: str, message: str, circle: str | None = None) -> str:
-        """Send an async notification to a peer (fire-and-forget).
+        """[Repowire mesh] Send a fire-and-forget notification to a peer in another project.
 
         Use for status updates, announcements, or replying to notifications.
         Special peers: 'telegram' sends to user's phone, 'dashboard' shows in web UI.
 
+        Do NOT use SendMessage to reach repowire peers. SendMessage is a Claude
+        Code harness tool for same-session teammates only.
+
         Args:
             peer_name: Name of the peer to notify
             message: The notification message
-            circle: Circle to scope the lookup (optional — required when multiple
+            circle: Circle to scope the lookup (optional, required when multiple
                     peers share the same name in different circles)
 
         Returns:
@@ -204,10 +214,13 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool()
     async def broadcast(message: str) -> str:
-        """Send a message to all online peers.
+        """[Repowire mesh] Broadcast to all online peers across the mesh.
 
         Use for announcements that affect everyone, like deployment updates
         or breaking changes. Do NOT use for responses to queries.
+
+        Do NOT use SendMessage to reach repowire peers. SendMessage is a Claude
+        Code harness tool for same-session teammates only.
 
         Args:
             message: The message to broadcast
@@ -233,7 +246,7 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool()
     async def whoami() -> str:
-        """Return information about yourself (the calling peer).
+        """[Repowire mesh] Return your identity in the repowire mesh.
 
         Returns TSV with columns: peer_id, name, project, circle, status, path, machine, description
         """
@@ -254,7 +267,7 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool()
     async def set_description(description: str) -> str:
-        """Update your task description, visible to other peers via list_peers.
+        """[Repowire mesh] Update your task description, visible to other peers via list_peers.
 
         Call this at the start of a task so peers know what you're working on.
 
@@ -279,33 +292,47 @@ def create_mcp_server() -> FastMCP:
 
     @mcp.tool()
     async def spawn_peer(path: str, command: str, circle: str = "default") -> str:
-        """Spawn a new coding session for a project.
+        """[Repowire mesh] Spawn a new coding session in a different project directory.
 
         The command must exactly match an entry in daemon.spawn.allowed_commands
         in ~/.repowire/config.yaml. If no allowed_commands are configured, spawn
         is disabled and this will return an error.
 
         The spawned agent self-registers into the mesh via its SessionStart hook
-        once it starts — no manual registration needed.
+        within a few seconds. Use list_peers() to confirm registration and get
+        the peer_id.
+
+        The circle maps to the tmux session name and cannot be reassigned after
+        spawn.
+
+        Do NOT use SendMessage to reach spawned peers. SendMessage is a Claude
+        Code harness tool for same-session teammates only. Use ask_peer() or
+        notify_peer() instead.
 
         Args:
             path: Absolute path to the project directory
             command: Command to run (e.g. "claude", "claude --dangerously-skip-permissions")
-            circle: Circle to spawn into (default: "default")
+            circle: Circle to spawn into (default: "default") -- maps to tmux session name
 
         Returns:
-            tmux_session reference (e.g. "default:myproject") — pass this to kill_peer to stop it
+            Spawn confirmation with display_name and tmux_session
         """
         result = await daemon_request(
             "POST",
             "/spawn",
             {"path": path, "command": command, "circle": circle},
         )
-        return result["tmux_session"]
+        name = result["display_name"]
+        tmux = result["tmux_session"]
+        return (
+            f"Spawned {name} (tmux: {tmux}). "
+            f"Peer will self-register shortly. Use list_peers() to confirm "
+            f"and get peer_id. Address it as '{name}' via ask_peer/notify_peer."
+        )
 
     @mcp.tool()
     async def kill_peer(tmux_session: str) -> str:
-        """Kill a spawned coding session.
+        """[Repowire mesh] Kill a spawned coding session.
 
         Args:
             tmux_session: Session reference returned by spawn_peer (e.g. "default:myproject")

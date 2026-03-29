@@ -224,6 +224,62 @@ class TestEvents:
         assert "id" in event
         assert "timestamp" in event
 
+    async def test_chat_turn_with_explicit_peer_id(self, client):
+        """Chat turn with peer_id passed directly should store it in the event."""
+        r = await client.post("/events/chat", json={
+            "peer": "testpeer",
+            "role": "user",
+            "text": "hello",
+            "peer_id": "repow-default-abc12345",
+        })
+        assert r.status_code == 200
+
+        r = await client.get("/events")
+        events = r.json()
+        assert len(events) == 1
+        assert events[0]["peer_id"] == "repow-default-abc12345"
+
+    async def test_chat_turn_resolves_peer_id_from_pane_id(self, client):
+        """Chat turn with pane_id should resolve peer_id from registry."""
+        from repowire.config.models import AgentType
+        from repowire.daemon.deps import get_peer_registry
+        registry = get_peer_registry()
+        await registry.allocate_and_register(
+            display_name="panepeer",
+            circle="default",
+            backend=AgentType.CLAUDE_CODE,
+            path="/tmp/test",
+            pane_id="%99",
+        )
+
+        r = await client.post("/events/chat", json={
+            "peer": "panepeer",
+            "role": "assistant",
+            "text": "done",
+            "pane_id": "%99",
+        })
+        assert r.status_code == 200
+
+        r = await client.get("/events")
+        events = r.json()
+        assert len(events) == 1
+        assert events[0]["peer_id"] is not None
+        assert events[0]["peer_id"].startswith("repow-")
+
+    async def test_chat_turn_without_peer_id_or_pane_id(self, client):
+        """Chat turn without peer_id or pane_id should still work (legacy compat)."""
+        r = await client.post("/events/chat", json={
+            "peer": "legacypeer",
+            "role": "user",
+            "text": "old style",
+        })
+        assert r.status_code == 200
+
+        r = await client.get("/events")
+        events = r.json()
+        assert len(events) == 1
+        assert events[0].get("peer_id") is None
+
 
 # -- Notify --
 
