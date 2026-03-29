@@ -247,10 +247,20 @@ def setup(
         console.print("Run 'repowire serve' to start the daemon manually.")
     else:
         console.print("Daemon is running. Restart your IDE to use Repowire.")
-    console.print(
-        "[dim]To enable spawn_peer, configure allowed_commands and "
-        "allowed_paths in ~/.repowire/config.yaml[/]"
-    )
+
+    # Hints for optional features not yet configured
+    hints = []
+    if not config.relay.enabled:
+        hints.append("Remote dashboard + multi-machine mesh: repowire setup --relay")
+    if not config.telegram.bot_token:
+        hints.append("Telegram bot (mobile control): repowire setup (interactive)")
+    if not config.slack.bot_token:
+        hints.append("Slack bot: repowire setup (interactive)")
+    if hints:
+        console.print("")
+        console.print("[dim]Optional:[/]")
+        for h in hints:
+            console.print(f"[dim]  {h}[/]")
 
 
 @main.command(name="build-ui")
