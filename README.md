@@ -16,7 +16,7 @@
 
 ## Why?
 
-AI coding agents work great in a single repo, but multi-repo projects need a **context breakout**: a way to get information from other codebases. Most solutions are **async context breakouts** (memory banks, docs, persisted context). Repowire is a **sync context breakout**: live agents talking to each other about current code. Your `frontend` agent can ask `backend` about API shapes and get a real answer from the actual codebase.
+AI coding agents work great in a single repo, but multi-repo projects need a **context breakout**: a way to get information from other codebases. Most solutions are **async context breakouts** (memory banks, docs, persisted context). Repowire is a **sync context breakout**: live agents talking to each other about current code. An agent in one repo can ask an agent in another repo a question and get a real answer from the actual codebase.
 
 Read more: [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind Repowire](https://prassanna.io/blog/repowire/).
 
@@ -60,26 +60,26 @@ repowire setup
 Then open your agents in separate tmux windows:
 
 ```bash
-# Terminal 1
-cd ~/projects/frontend && claude
+# tmux window 1
+cd ~/projects/project-a && claude
 
-# Terminal 2
-cd ~/projects/backend && codex
+# tmux window 2
+cd ~/projects/project-b && codex
 ```
 
-That's it. Both sessions auto-register as peers and discover each other. In frontend:
+Both sessions auto-register as peers and discover each other. In project-a:
 
 ```
-"Ask backend what API endpoints they expose"
+"Ask project-b what API endpoints they expose"
 ```
 
-The agent calls `ask_peer`, backend receives the question, responds, and the answer comes back. Works across Claude Code, Codex, Gemini CLI, and OpenCode in any mix.
+The agent calls `ask_peer`, project-b receives the question, responds, and the answer comes back. Works across Claude Code, Codex, Gemini CLI, and OpenCode in any mix.
 
 Or use the CLI helper to spawn sessions in tmux:
 
 ```bash
-repowire peer new ~/projects/frontend
-repowire peer new ~/projects/backend
+repowire peer new ~/projects/project-a
+repowire peer new ~/projects/project-b
 ```
 
 ## How It Works
@@ -125,6 +125,32 @@ repowire setup --experimental-channels
 - Messages arrive as `<channel source="repowire">` tags in Claude's context
 - Claude replies via `reply` tool instead of transcript scraping
 - Requires claude.ai login (not available for API/Console key auth)
+
+</details>
+
+<details>
+<summary><strong>Patterns</strong></summary>
+
+### Multi-repo coordination
+Agents in different repos ask each other questions in real time. Project-a needs to know project-b's API shape? `ask_peer("project-b", "what endpoints do you expose?")` gets a live answer from the actual codebase, not stale docs.
+
+### Cross-agent review
+Have a different agent review your work. Peer A builds a feature, peer B runs a review pass (code quality, security, simplification). Works especially well with different agent runtimes reviewing each other's output.
+
+### Orchestrator
+A dedicated coordinator peer manages the mesh. It dispatches tasks, tracks progress, runs review cycles, and coordinates releases across multiple project peers. The pattern that makes 10+ agents manageable.
+
+### Worktree isolation
+Spawn peers on git worktrees for parallel, isolated work. Each peer works on a branch, creates a PR, another peer reviews. Clean separation with no merge conflicts during development.
+
+### Mobile mesh management
+The Telegram bot lets you dispatch work, check peer status, and coordinate from your phone. Send a message to any peer from anywhere.
+
+### Infrastructure-as-peer
+A dedicated peer for infrastructure (k8s, DNS, cloud config) that other project peers coordinate with directly. Need a namespace created? Ask the infra peer. Need a deploy? Notify it.
+
+### Overnight autonomy
+Give peers tasks and disconnect. They work autonomously, report back via Telegram or dashboard when you return. Long-running tasks (migrations, refactors, test suites) complete while you sleep.
 
 </details>
 
