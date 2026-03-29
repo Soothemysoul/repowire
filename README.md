@@ -130,9 +130,7 @@ repowire setup --experimental-channels
 
 </details>
 
-<details>
-<summary><strong>Patterns</strong></summary>
-<br>
+## Patterns
 
 <details>
 <summary>Multi-repo coordination</summary>
@@ -174,8 +172,6 @@ A dedicated peer for infrastructure (k8s, DNS, cloud config) that other project 
 <summary>Overnight autonomy</summary>
 
 Give peers tasks and disconnect. They work autonomously, report back via Telegram or dashboard when you return. Long-running tasks (migrations, refactors, test suites) complete while you sleep.
-</details>
-
 </details>
 
 ## Control Plane
