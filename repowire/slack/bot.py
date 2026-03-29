@@ -66,10 +66,16 @@ class SlackPeer:
         self._slack_ws: Any = None
         self._stopping = False
         self._reply_target: str | None = None
+        self._task: asyncio.Task[None] | None = None
+
+    async def _run(self) -> None:
+        await asyncio.gather(self._daemon_ws_loop(), self._slack_ws_loop())
 
     async def start(self) -> None:
         logger.info("Starting Slack peer")
-        await asyncio.gather(self._daemon_ws_loop(), self._slack_ws_loop())
+        self._stopping = False
+        self._task = asyncio.create_task(self._run())
+        await self._task
 
     async def stop(self) -> None:
         self._stopping = True
@@ -85,6 +91,13 @@ class SlackPeer:
                 pass
         await self._http.aclose()
         await self._daemon_http.aclose()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
 
     # -- Daemon WebSocket --
 

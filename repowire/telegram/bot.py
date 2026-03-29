@@ -68,16 +68,29 @@ class TelegramPeer:
         self._stopping = False
         self._tg_offset = 0
         self._reply_target: str | None = None  # peer to send next message to
+        self._task: asyncio.Task[None] | None = None
+
+    async def _run(self) -> None:
+        await asyncio.gather(self._ws_loop(), self._poll_loop())
 
     async def start(self) -> None:
         logger.info("Starting Telegram peer")
-        await asyncio.gather(self._ws_loop(), self._poll_loop())
+        self._stopping = False
+        self._task = asyncio.create_task(self._run())
+        await self._task
 
     async def stop(self) -> None:
         self._stopping = True
         if self._ws:
             await self._ws.close()
         await self._http.aclose()
+        if self._task:
+            self._task.cancel()
+            try:
+                await self._task
+            except asyncio.CancelledError:
+                pass
+            self._task = None
 
     # -- Daemon WebSocket --
 

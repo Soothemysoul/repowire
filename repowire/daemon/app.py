@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import signal
@@ -101,10 +102,40 @@ def create_app(
             app.state.relay_client = relay_client
             logger.info("Relay client connected to %s", cfg.relay.url)
 
+        # Start configured bot services
+        daemon_url = f"http://{cfg.daemon.host}:{cfg.daemon.port}"
+        services: list[tuple[str, object]] = []
+
+        if cfg.telegram.bot_token and cfg.telegram.chat_id:
+            from repowire.telegram.bot import TelegramPeer
+
+            services.append(("telegram", TelegramPeer(
+                bot_token=cfg.telegram.bot_token,
+                chat_id=cfg.telegram.chat_id,
+                daemon_url=daemon_url,
+            )))
+
+        if cfg.slack.bot_token and cfg.slack.app_token and cfg.slack.channel_id:
+            from repowire.slack.bot import SlackPeer
+
+            services.append(("slack", SlackPeer(
+                bot_token=cfg.slack.bot_token,
+                app_token=cfg.slack.app_token,
+                channel_id=cfg.slack.channel_id,
+                daemon_url=daemon_url,
+            )))
+
+        for name, svc in services:
+            asyncio.create_task(svc.start())  # type: ignore[union-attr]
+            logger.info("%s service started", name)
+
         logger.info("Unified WebSocket backend initialized")
 
         yield
 
+        for name, svc in reversed(services):
+            await svc.stop()  # type: ignore[union-attr]
+            logger.info("%s service stopped", name)
         if relay_client:
             await relay_client.stop()
         peer_registry._save_events()
@@ -176,8 +207,6 @@ def create_app(
     @app.post("/shutdown", include_in_schema=False)
     async def shutdown(_: None = Depends(require_localhost)):
         """Shutdown the daemon gracefully. Restricted to localhost."""
-        import asyncio
-
         loop = asyncio.get_event_loop()
         loop.call_later(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
         return {"status": "shutting_down"}
