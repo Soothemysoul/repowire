@@ -79,17 +79,9 @@ The agent uses the `ask_peer` tool, backend responds, and you get the answer bac
 
 All peers connect to a central daemon via **WebSocket**. The daemon routes addressed messages between peers — no pub/sub, no topics. Messages go from peer A to peer B by name.
 
-```
-┌──────────────┐          ┌──────────────┐          ┌──────────────┐
-│  Claude Code │  hooks   │              │  hooks   │    Codex     │
-│  frontend    │◄────────►│              │◄────────►│    api       │
-└──────────────┘   (MCP)  │    Daemon    │   (MCP)  └──────────────┘
-                          │    :8377     │
-┌──────────────┐  hooks   │              │  plugin  ┌──────────────┐
-│  Gemini CLI  │◄────────►│              │◄────────►│  OpenCode    │
-│  backend     │   (MCP)  └──────────────┘   (WS)   │  infra       │
-└──────────────┘                                    └──────────────┘
-```
+<p align="center">
+  <img src="images/repowire-arch.png" alt="Repowire architecture" width="700" />
+</p>
 
 **Message types:**
 - `ask_peer` — request/response with correlation ID (blocks until answer, 300s timeout)
