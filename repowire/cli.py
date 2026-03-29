@@ -187,24 +187,36 @@ def setup(
 
     console.print(f"[green]✓[/] Configured agents: {', '.join(agents_setup)}")
 
-    # Relay: flag or interactive prompt
-    enable_relay = relay
-    if not enable_relay and interactive:
-        enable_relay = click.confirm(
-            "Connect to hosted relay at repowire.io for remote access?", default=False
-        )
-    if enable_relay:
+    # Relay: flag, existing config, or interactive prompt
+    if config.relay.enabled:
+        console.print("[green]✓[/] Relay enabled (existing config)")
+    elif relay:
         config.relay.enabled = True
         config.relay.ensure_api_key()
         console.print("[green]✓[/] Relay enabled")
         console.print(f"  Dashboard: {config.relay.dashboard_url}")
+    elif interactive:
+        if click.confirm(
+            "Connect to hosted relay at repowire.io for remote access?",
+            default=False,
+        ):
+            config.relay.enabled = True
+            config.relay.ensure_api_key()
+            console.print("[green]✓[/] Relay enabled")
+            console.print(f"  Dashboard: {config.relay.dashboard_url}")
 
-    # Bot integrations: interactive prompts
-    if interactive:
+    # Bot integrations: show existing config or prompt
+    if config.telegram.bot_token:
+        console.print("[green]✓[/] Telegram configured (existing config)")
+    elif interactive:
         _prompt_bot_config("Telegram", config.telegram, [
             ("bot_token", "Bot token"),
             ("chat_id", "Chat ID"),
         ])
+
+    if config.slack.bot_token:
+        console.print("[green]✓[/] Slack configured (existing config)")
+    elif interactive:
         _prompt_bot_config("Slack", config.slack, [
             ("bot_token", "Bot token (xoxb-...)"),
             ("app_token", "App token (xapp-...)"),
