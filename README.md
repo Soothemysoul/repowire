@@ -5,7 +5,7 @@
   </picture>
 
   <h1>Repowire</h1>
-  <p>Mesh network for AI coding agents — enables Claude Code, Codex, Gemini, and OpenCode sessions to communicate.</p>
+  <p>Mesh network for AI coding agents. Enables Claude Code, Codex, Gemini, and OpenCode sessions to communicate.</p>
 
   [![PyPI](https://img.shields.io/pypi/v/repowire)](https://pypi.org/project/repowire/)
   [![CI](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml/badge.svg)](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml)
@@ -16,7 +16,7 @@
 
 ## Why?
 
-AI coding agents work great in a single repo, but multi-repo projects need a **context breakout** — a way to get information from other codebases. Most solutions are **async context breakouts**: memory banks, docs, persisted context. Repowire is a **sync context breakout**: live agents talking to each other about current code. Your `frontend` agent can ask `backend` about API shapes and get a real answer from the actual codebase.
+AI coding agents work great in a single repo, but multi-repo projects need a **context breakout**: a way to get information from other codebases. Most solutions are **async context breakouts** (memory banks, docs, persisted context). Repowire is a **sync context breakout**: live agents talking to each other about current code. Your `frontend` agent can ask `backend` about API shapes and get a real answer from the actual codebase.
 
 Read more: [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind Repowire](https://prassanna.io/blog/repowire/).
 
@@ -53,11 +53,11 @@ uv tool install repowire    # or: pipx install repowire / pip install repowire
 ## Quick Start
 
 ```bash
-# One-time setup — detects your agents, installs hooks + MCP, starts daemon
+# One-time setup: detects your agents, installs hooks + MCP, starts daemon
 repowire setup
 ```
 
-Then just open your agents normally — in separate tmux windows, terminals, whatever:
+Then open your agents in separate tmux windows:
 
 ```bash
 # Terminal 1
@@ -73,7 +73,7 @@ That's it. Both sessions auto-register as peers and discover each other. In fron
 "Ask backend what API endpoints they expose"
 ```
 
-The agent calls `ask_peer`, backend receives the question, responds, and the answer comes back. Works across Claude Code, Codex, Gemini CLI, and OpenCode — any mix.
+The agent calls `ask_peer`, backend receives the question, responds, and the answer comes back. Works across Claude Code, Codex, Gemini CLI, and OpenCode in any mix.
 
 Or use the CLI helper to spawn sessions in tmux:
 
@@ -84,16 +84,16 @@ repowire peer new ~/projects/backend
 
 ## How It Works
 
-All peers connect to a central daemon via **WebSocket**. The daemon routes addressed messages between peers — no pub/sub, no topics. Messages go from peer A to peer B by name.
+All peers connect to a central daemon via **WebSocket**. The daemon routes addressed messages between peers. No pub/sub, no topics. Messages go from peer A to peer B by name.
 
 <p align="center">
   <img src="images/repowire-arch.webp" alt="Repowire architecture" width="700" />
 </p>
 
 **Message types:**
-- `ask_peer` — request/response with correlation ID (blocks until answer, 300s timeout)
-- `notify_peer` — fire-and-forget (no response expected)
-- `broadcast` — fan-out to all peers in your circle
+- `ask_peer` - request/response with correlation ID (blocks until answer, 300s timeout)
+- `notify_peer` - fire-and-forget (no response expected)
+- `broadcast` - fan-out to all peers in your circle
 
 **Circles** are logical subnets (mapped to tmux sessions). Peers can only communicate within their circle unless explicitly bypassed.
 
@@ -109,9 +109,9 @@ All peers connect to a central daemon via **WebSocket**. The daemon routes addre
 `repowire setup` auto-detects which agents are installed and configures each one.
 
 All agents use **hooks + tmux injection** for message delivery:
-- **SessionStart** — registers peer, spawns WebSocket hook, injects peer list
-- **UserPromptSubmit** / **BeforeAgent** — marks peer BUSY
-- **Stop** / **AfterAgent** — marks peer ONLINE, extracts response for dashboard
+- **SessionStart** - registers peer, spawns WebSocket hook, injects peer list
+- **UserPromptSubmit** / **BeforeAgent** - marks peer BUSY
+- **Stop** / **AfterAgent** - marks peer ONLINE, extracts response for dashboard
 
 <details>
 <summary><strong>Experimental: Claude Code channel transport</strong></summary>
@@ -138,12 +138,12 @@ repowire setup --experimental-channels
 
 Monitor your agent mesh at `http://localhost:8377/dashboard`, or remotely via [repowire.io](https://repowire.io):
 
-- **Peer overview** — online/busy/offline status, descriptions, project paths
-- **Chat view** — conversation history per peer with tool call details
-- **Compose bar** — send notifications or queries to any peer from the browser
-- **Mobile responsive** — hamburger menu, touch-friendly compose
+- **Peer overview** - online/busy/offline status, descriptions, project paths
+- **Chat view** - conversation history per peer with tool call details
+- **Compose bar** - send notifications or queries to any peer from the browser
+- **Mobile responsive** - hamburger menu, touch-friendly compose
 
-For remote access: `repowire setup --relay` connects your daemon to [repowire.io](https://repowire.io) via outbound WebSocket. Access your dashboard from any browser — no port forwarding, no VPN.
+For remote access: `repowire setup --relay` connects your daemon to [repowire.io](https://repowire.io) via outbound WebSocket. Access your dashboard from any browser. No port forwarding, no VPN.
 
 <details>
 <summary>More screenshots</summary>
@@ -158,17 +158,17 @@ For remote access: `repowire setup --relay` connects your daemon to [repowire.io
 
 ### Telegram Bot
 
-Control your mesh from your phone. A Telegram bot registers as a peer — notifications from agents appear in your chat, messages you send get routed to peers.
+Control your mesh from your phone. A Telegram bot registers as a peer. Notifications from agents appear in your chat, messages you send get routed to peers.
 
 ```bash
 # Tokens configured via `repowire setup`, or via env vars:
 repowire telegram start
 ```
 
-- `/peers` — shows online peers with inline buttons
+- `/peers` - shows online peers with inline buttons
 - Tap a peer → type your message → sent as notification
 - Sticky routing: `/select repowire` → all messages go there until `/clear`
-- Agents know `@telegram` is you — they can `notify_peer('telegram', ...)` to reach your phone
+- Agents know `@telegram` is you. They can `notify_peer('telegram', ...)` to reach your phone
 
 ## MCP Tools
 
@@ -176,7 +176,7 @@ repowire telegram start
 |------|------|-------------|
 | `list_peers` | Query | List all peers with status, circle, path, description |
 | `ask_peer` | Blocking | Send a question and wait for the response |
-| `notify_peer` | Fire-and-forget | Send a notification — peer can `notify_peer` back when ready |
+| `notify_peer` | Fire-and-forget | Send a notification. Peer can `notify_peer` back when ready |
 | `broadcast` | Fire-and-forget | Message all online peers in your circle |
 | `whoami` | Query | Your own peer identity |
 | `set_description` | Mutation | Update your task description, visible to all peers and the dashboard |
@@ -231,17 +231,17 @@ relay:
   url: "wss://repowire.io"
   api_key: "rw_..."                 # Auto-generated on first `repowire serve --relay`
 
-telegram:                           # Optional — configured via `repowire setup`
+telegram:                           # Optional, configured via `repowire setup`
   bot_token: "..."
   chat_id: "..."
 
-slack:                              # Optional — configured via `repowire setup`
+slack:                              # Optional, configured via `repowire setup`
   bot_token: "xoxb-..."
   app_token: "xapp-..."
   channel_id: "C..."
 ```
 
-Peers auto-register via WebSocket on session start — no manual config needed.
+Peers auto-register via WebSocket on session start. No manual config needed.
 
 <details>
 <summary><strong>Remote relay details</strong></summary>
@@ -266,10 +266,10 @@ Self-host the relay: `repowire relay start --port 8000`
 <details>
 <summary><strong>Security</strong></summary>
 
-- **WebSocket auth** — set `daemon.auth_token` in config to require bearer token for connections
-- **CORS** — restricted to localhost origins (plus `repowire.io` when relay is enabled)
-- **Spawn allowlist** — `daemon.spawn.allowed_commands` and `allowed_paths` must both be non-empty for MCP spawn to work
-- **Channel gating** — channel transport is opt-in (`--experimental-channels`), requires claude.ai login
+- **WebSocket auth** - set `daemon.auth_token` in config to require bearer token for connections
+- **CORS** - restricted to localhost origins (plus `repowire.io` when relay is enabled)
+- **Spawn allowlist** - `daemon.spawn.allowed_commands` and `allowed_paths` must both be non-empty for MCP spawn to work
+- **Channel gating** - channel transport is opt-in (`--experimental-channels`), requires claude.ai login
 
 </details>
 
@@ -292,7 +292,7 @@ uv tool uninstall repowire
 - Daemon launchd/systemd service
 
 **Not removed automatically** (contains your data/config):
-- `~/.repowire/` — config, session mappings, events, attachments
+- `~/.repowire/` - config, session mappings, events, attachments
 - Relay API key in `~/.repowire/config.yaml`
 
 To fully clean up: `rm -rf ~/.repowire`
