@@ -86,7 +86,8 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler._register_peer_http", return_value=True)
     @patch("repowire.hooks.session_handler.get_tmux_info",
            return_value={"pane_id": "%1", "session_name": "default", "window_name": "test"})
-    def test_session_start_registers(self, mock_tmux, mock_register, mock_fetch, tmp_path):
+    @patch("repowire.hooks.session_handler.subprocess.Popen")
+    def test_session_start_registers(self, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path):
         with patch("repowire.hooks.session_handler.CACHE_DIR", tmp_path):
             result = _run_with_input({
                 "hook_event_name": "SessionStart",
