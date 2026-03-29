@@ -408,12 +408,16 @@ class PeerRegistry:
 
     def _resolve_from_peer_unlocked(
         self, from_peer: str, target_peer: Peer, bypass_circle: bool
-    ) -> None:
-        """Resolve from_peer and check circle access. Must hold lock."""
+    ) -> Peer | None:
+        """Resolve from_peer and check circle access. Must hold lock.
+
+        Returns the resolved from_peer Peer object (or None if not found).
+        """
         from_peer_obj = self._lookup_peer_unlocked(
             from_peer, circle=target_peer.circle
         ) or self._lookup_peer_unlocked(from_peer)
         self._check_circle_access_by_peers(from_peer_obj, target_peer, bypass_circle)
+        return from_peer_obj
 
     def _check_circle_access_by_peers(
         self, from_obj: Peer | None, to_obj: Peer | None, bypass: bool
@@ -452,9 +456,10 @@ class PeerRegistry:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
+            from_obj = self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
+            from_peer_id = from_obj.peer_id if from_obj else None
 
         formatted_query = (
             f"[Repowire Query from @{from_peer}]\n"
@@ -465,7 +470,11 @@ class PeerRegistry:
 
         query_event_id = self.add_event(
             "query",
-            {"from": from_peer, "to": to_peer, "text": text, "status": "pending"},
+            {
+                "from": from_peer, "to": to_peer, "text": text,
+                "from_peer_id": from_peer_id, "to_peer_id": peer_id,
+                "status": "pending",
+            },
         )
 
         try:
@@ -481,8 +490,8 @@ class PeerRegistry:
             self.add_event(
                 "response",
                 {
-                    "from": to_peer,
-                    "to": from_peer,
+                    "from": to_peer, "to": from_peer,
+                    "from_peer_id": peer_id, "to_peer_id": from_peer_id,
                     "text": response[:100] + "..." if len(response) > 100 else response,
                     "correlation_id": query_event_id,
                 },
@@ -528,13 +537,17 @@ class PeerRegistry:
             peer = self._lookup_peer_unlocked(to_peer, circle=circle)
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
+            from_obj = self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
+            from_peer_id = from_obj.peer_id if from_obj else None
 
         self.add_event(
             "notification",
-            {"from": from_peer, "to": to_peer, "text": text},
+            {
+                "from": from_peer, "to": to_peer, "text": text,
+                "from_peer_id": from_peer_id, "to_peer_id": peer_id,
+            },
         )
 
         await self._router.send_notification(
@@ -556,11 +569,6 @@ class PeerRegistry:
         Returns:
             List of peer names that received the broadcast
         """
-        self.add_event(
-            "broadcast",
-            {"from": from_peer, "text": text, "exclude": exclude},
-        )
-
         exclude_names = set(exclude or [])
         exclude_names.add(from_peer)
 
@@ -580,6 +588,15 @@ class PeerRegistry:
                 for sid, peer in self._peers.items():
                     if peer.circle != from_circle:
                         exclude_session_ids.add(sid)
+
+            from_peer_id = from_peer_obj.peer_id if from_peer_obj else None
+        self.add_event(
+            "broadcast",
+            {
+                "from": from_peer, "text": text, "exclude": exclude,
+                "from_peer_id": from_peer_id,
+            },
+        )
 
         sent_session_ids = await self._router.broadcast(
             from_peer=from_peer,

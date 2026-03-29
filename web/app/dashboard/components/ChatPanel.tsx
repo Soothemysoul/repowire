@@ -42,24 +42,15 @@ function ToolCallsList({ toolCalls }: { toolCalls: { name: string; input: string
 export function ChatPanel({ peer, events }: ChatPanelProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const projectName = peer.path?.split("/").pop() ?? "";
-
   const filtered = useMemo(() => {
-    const isPeerName = (name?: string) =>
-      name === peer.name || name === peer.display_name;
-
+    const id = peer.peer_id;
     return events
       .filter((e) => {
-        if (e.type === "chat_turn") {
-          // Prefer peer_id match (unambiguous), fall back to name match for legacy events
-          if (e.peer_id) return e.peer_id === peer.peer_id;
-          return isPeerName(e.peer) || e.peer === projectName;
-        }
-        // Protocol events use session IDs -- strict match only
-        return isPeerName(e.from) || isPeerName(e.to);
+        if (e.type === "chat_turn") return e.peer_id === id;
+        return e.from_peer_id === id || e.to_peer_id === id;
       })
-      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
-  }, [peer.peer_id, peer.name, peer.display_name, projectName, events]);
+      .sort((a, b) => a.timestamp.localeCompare(b.timestamp));
+  }, [peer.peer_id, events]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });

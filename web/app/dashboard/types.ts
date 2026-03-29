@@ -31,6 +31,8 @@ export interface Event {
   timestamp: string;
   from?: string;
   to?: string;
+  from_peer_id?: string;
+  to_peer_id?: string;
   text: string;
   status?: "pending" | "success" | "error" | "blocked";
   peer?: string;

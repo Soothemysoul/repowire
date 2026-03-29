@@ -19,7 +19,8 @@ interface Conversation {
 
 interface ActivityFeedProps {
   events: Event[];
-  peerFilter?: string; // filter to events involving this peer name
+  peerFilter?: string; // peer_id to filter events by
+  peerName?: string; // display name for empty state
 }
 
 function ConversationCard({
@@ -167,23 +168,22 @@ function NotificationRow({ event, isExpanded, onToggle }: { event: Event; isExpa
   );
 }
 
-export function ActivityFeed({ events, peerFilter }: ActivityFeedProps) {
+export function ActivityFeed({ events, peerFilter, peerName }: ActivityFeedProps) {
   const { conversations, notifications } = useMemo(() => {
     const responseById = new Map<string, Event>();
     const queryEvents: Event[] = [];
     const notifEvents: Event[] = [];
 
     for (const e of events) {
+      const matchesPeer = !peerFilter
+        || e.from_peer_id === peerFilter || e.to_peer_id === peerFilter;
+
       if (e.type === "query") {
-        if (!peerFilter || e.from === peerFilter || e.to === peerFilter) {
-          queryEvents.push(e);
-        }
+        if (matchesPeer) queryEvents.push(e);
       } else if (e.type === "response" && e.correlation_id) {
         responseById.set(e.correlation_id, e);
       } else if (e.type === "notification" || e.type === "broadcast") {
-        if (!peerFilter || e.from === peerFilter || e.to === peerFilter) {
-          notifEvents.push(e);
-        }
+        if (matchesPeer) notifEvents.push(e);
       }
     }
 
@@ -217,7 +217,7 @@ export function ActivityFeed({ events, peerFilter }: ActivityFeedProps) {
     items.sort((a, b) => {
       const ta = "timestamp" in a.data ? a.data.timestamp : "";
       const tb = "timestamp" in b.data ? b.data.timestamp : "";
-      return new Date(tb).getTime() - new Date(ta).getTime();
+      return tb.localeCompare(ta);
     });
     return items;
   }, [conversations, notifications]);
@@ -237,7 +237,7 @@ export function ActivityFeed({ events, peerFilter }: ActivityFeedProps) {
     return (
       <div className="text-center py-12 text-zinc-600">
         <p className="text-sm">
-          {peerFilter ? `No activity involving ${peerFilter}` : "No activity yet"}
+          {peerFilter ? `No activity involving ${peerName || peerFilter}` : "No activity yet"}
         </p>
         <p className="text-xs mt-1">Send a message to get started</p>
       </div>

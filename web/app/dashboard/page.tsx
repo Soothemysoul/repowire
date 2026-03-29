@@ -222,7 +222,7 @@ export default function Dashboard() {
                 </div>
               ) : (
                 <div className="flex-1 overflow-y-auto p-4">
-                  <ActivityFeed events={events} peerFilter={selectedPeer.name} />
+                  <ActivityFeed events={events} peerFilter={selectedPeer.peer_id} peerName={selectedPeer.name} />
                 </div>
               )}
             </>
