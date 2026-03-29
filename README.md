@@ -53,27 +53,27 @@ uv tool install repowire    # or: pipx install repowire / pip install repowire
 ## Quick Start
 
 ```bash
-# One-time setup — installs hooks, MCP server, and daemon service
+# One-time setup — detects your agents, installs hooks + MCP, starts daemon
 repowire setup
-
-# Verify everything is running
-repowire status
 ```
 
-Spawn two peers:
+Then just open your agents normally — in separate tmux windows, terminals, whatever:
 
 ```bash
-repowire peer new ~/projects/frontend --circle dev
-repowire peer new ~/projects/backend --circle dev
+# Terminal 1
+cd ~/projects/frontend && claude
+
+# Terminal 2
+cd ~/projects/backend && codex
 ```
 
-The sessions auto-discover each other. In any agent:
+That's it. Both sessions auto-register as peers and discover each other. In frontend:
 
 ```
 "Ask backend what API endpoints they expose"
 ```
 
-The agent uses the `ask_peer` tool, backend responds, and you get the answer back.
+The agent calls `ask_peer`, backend receives the question, responds, and the answer comes back. Works across Claude Code, Codex, Gemini CLI, and OpenCode — any mix.
 
 ## How It Works
 
