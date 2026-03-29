@@ -81,14 +81,21 @@ async def _get_my_peer_name() -> str:
 async def _ensure_registered() -> None:
     """Lazy-register this peer with the daemon on first MCP tool use.
 
-    Ensures Codex/Gemini peers appear in the mesh even when SessionStart
-    hooks don't fire (e.g. one-shot prompt mode).
+    Skips registration if the peer already exists (e.g. SessionStart hook
+    already registered it). Only registers as fallback for agents where
+    hooks don't fire (one-shot prompt mode).
     """
     global _registered
     if _registered:
         return
     _registered = True
     name = await _get_my_peer_name()
+    try:
+        # Check if peer already registered (by hook or previous session)
+        await daemon_request("GET", f"/peers/{name}")
+        return  # Already registered — skip
+    except Exception:
+        pass
     backend = os.environ.get("REPOWIRE_BACKEND", "claude-code")
     try:
         await daemon_request("POST", "/peers", {
@@ -99,7 +106,7 @@ async def _ensure_registered() -> None:
             "backend": backend,
         })
     except Exception:
-        pass  # Best-effort — daemon may be down or peer already registered
+        pass  # Best-effort — daemon may be down
 
 
 def create_mcp_server() -> FastMCP:
