@@ -266,8 +266,7 @@ async def ingest_chat_turn(
     peer_registry = get_peer_registry()
     data = request.model_dump(exclude={"pane_id"})
 
-    # Resolve peer_id from pane_id if not provided directly
-    if not data.get("peer_id") and request.pane_id:
+    if not request.peer_id and request.pane_id:
         peer = await peer_registry.get_peer_by_pane(request.pane_id)
         if peer:
             data["peer_id"] = peer.peer_id

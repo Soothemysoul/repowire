@@ -80,7 +80,6 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
         lines.append(f"  - {p['name']}{branch_str} ({project_name}){desc_str}")
 
     lines.append("")
-    lines.append("")
     lines.append(
         "IMPORTANT: When asked about these projects, ask the peer directly "
         "via ask_peer() rather than searching locally."
