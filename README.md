@@ -5,7 +5,7 @@
   </picture>
 
   <h1>Repowire</h1>
-  <p>Mesh network for AI coding agents — enables Claude Code and OpenCode sessions to communicate.</p>
+  <p>Mesh network for AI coding agents — enables Claude Code, Codex, Gemini, and OpenCode sessions to communicate.</p>
 
   [![PyPI](https://img.shields.io/pypi/v/repowire)](https://pypi.org/project/repowire/)
   [![CI](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml/badge.svg)](https://github.com/prassanna-ravishankar/repowire/actions/workflows/ci.yml)
@@ -16,7 +16,7 @@
 
 ## Why?
 
-AI coding agents work great in a single repo, but multi-repo projects need a **context breakout** — a way to get information from other codebases. Most solutions are **async context breakouts**: memory banks, docs, persisted context. Repowire is a **sync context breakout**: live agents talking to each other about current code. Your `frontend` Claude can ask `backend` about API shapes and get a real answer from the actual codebase.
+AI coding agents work great in a single repo, but multi-repo projects need a **context breakout** — a way to get information from other codebases. Most solutions are **async context breakouts**: memory banks, docs, persisted context. Repowire is a **sync context breakout**: live agents talking to each other about current code. Your `frontend` agent can ask `backend` about API shapes and get a real answer from the actual codebase.
 
 Read more: [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind Repowire](https://prassanna.io/blog/repowire/).
 
@@ -67,13 +67,13 @@ repowire peer new ~/projects/frontend --circle dev
 repowire peer new ~/projects/backend --circle dev
 ```
 
-The sessions auto-discover each other. In frontend's Claude:
+The sessions auto-discover each other. In any agent:
 
 ```
 "Ask backend what API endpoints they expose"
 ```
 
-Claude uses the `ask_peer` tool, backend responds, and you get the answer back.
+The agent uses the `ask_peer` tool, backend responds, and you get the answer back.
 
 ## How It Works
 
@@ -81,14 +81,14 @@ All peers connect to a central daemon via **WebSocket**. The daemon routes addre
 
 ```
 ┌──────────────┐          ┌──────────────┐          ┌──────────────┐
-│   Claude     │  channel │              │    WS    │   OpenCode   │
-│   frontend   │◄────────►│    Daemon    │◄────────►│   api        │
-└──────────────┘   (MCP)  │  :8377       │          └──────────────┘
-                          │              │
-┌──────────────┐  channel │              │
-│   Claude     │◄────────►│              │
-│   backend    │   (MCP)  └──────────────┘
-└──────────────┘
+│  Claude Code │  hooks   │              │  hooks   │    Codex     │
+│  frontend    │◄────────►│              │◄────────►│    api       │
+└──────────────┘   (MCP)  │    Daemon    │   (MCP)  └──────────────┘
+                          │    :8377     │
+┌──────────────┐  hooks   │              │  plugin  ┌──────────────┐
+│  Gemini CLI  │◄────────►│              │◄────────►│  OpenCode    │
+│  backend     │   (MCP)  └──────────────┘   (WS)   │  infra       │
+└──────────────┘                                    └──────────────┘
 ```
 
 **Message types:**
@@ -98,38 +98,34 @@ All peers connect to a central daemon via **WebSocket**. The daemon routes addre
 
 **Circles** are logical subnets (mapped to tmux sessions). Peers can only communicate within their circle unless explicitly bypassed.
 
-### Claude Code Transport
+### Supported Agents
 
-By default, repowire uses **hooks + tmux injection** — lifecycle hooks that handle peer registration, message delivery via `tmux send-keys`, and transcript scraping for responses.
+| Agent | Transport | How it connects |
+|-------|-----------|----------------|
+| **Claude Code** | Hooks + MCP | Lifecycle hooks register peer, MCP tools for messaging |
+| **OpenAI Codex** | Hooks + MCP | Same pattern (requires `codex_hooks` feature flag, auto-enabled) |
+| **Google Gemini CLI** | Hooks + MCP | Uses `BeforeAgent`/`AfterAgent` events (mapped to prompt/stop hooks) |
+| **OpenCode** | Plugin + WebSocket | TypeScript plugin with persistent WS connection |
 
-- **SessionStart** — registers peer, spawns WebSocket hook, injects peer list as context
-- **UserPromptSubmit** — marks peer BUSY
-- **Stop** — extracts response from transcript, delivers query responses, posts chat turns for dashboard
-- **Notification** (idle_prompt) — resets BUSY→ONLINE after interrupt
+`repowire setup` auto-detects which agents are installed and configures each one.
+
+All agents use **hooks + tmux injection** for message delivery:
+- **SessionStart** — registers peer, spawns WebSocket hook, injects peer list
+- **UserPromptSubmit** / **BeforeAgent** — marks peer BUSY
+- **Stop** / **AfterAgent** — marks peer ONLINE, extracts response for dashboard
 
 <details>
-<summary><strong>Experimental: channel transport</strong></summary>
+<summary><strong>Experimental: Claude Code channel transport</strong></summary>
 
-On Claude Code v2.1.80+ with claude.ai login and [bun](https://bun.sh), an experimental **channel transport** delivers messages directly into Claude's context via MCP, with no tmux injection.
+On Claude Code v2.1.80+ with claude.ai login and [bun](https://bun.sh), an experimental **channel transport** delivers messages directly via MCP, with no tmux injection.
 
 ```bash
 repowire setup --experimental-channels
 ```
 
-```
-Claude Code ←stdio→ repowire-channel (MCP) ←WebSocket→ Daemon
-```
-
-- Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
+- Messages arrive as `<channel source="repowire">` tags in Claude's context
 - Claude replies via `reply` tool instead of transcript scraping
 - Requires claude.ai login (not available for API/Console key auth)
-
-</details>
-
-<details>
-<summary><strong>OpenCode integration</strong></summary>
-
-OpenCode has a plugin SDK. The repowire plugin (`~/.opencode/plugin/repowire.ts`) maintains a persistent WebSocket connection and uses `client.session.prompt()` to inject queries.
 
 </details>
 
@@ -225,7 +221,8 @@ daemon:
   spawn:
     allowed_commands:
       - claude
-      - claude --dangerously-skip-permissions
+      - codex
+      - gemini
     allowed_paths:
       - ~/git
       - ~/projects
@@ -289,10 +286,10 @@ uv tool uninstall repowire
 ```
 
 `repowire uninstall` removes:
-- Claude Code hooks from `~/.claude/settings.json`
-- Channel transport from `~/.claude.json` (if installed)
-- MCP server registration (`claude mcp remove repowire`)
-- OpenCode plugin (if installed)
+- Claude Code hooks + MCP server + channel transport
+- Codex hooks + MCP config from `~/.codex/`
+- Gemini hooks + MCP config from `~/.gemini/settings.json`
+- OpenCode plugin
 - Daemon launchd/systemd service
 
 **Not removed automatically** (contains your data/config):
