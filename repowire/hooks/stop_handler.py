@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stop hook handler - captures responses and delivers to daemon via HTTP."""
+"""Stop / AfterAgent hook handler - captures responses and delivers to daemon."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
+from repowire.hooks.adapters import hook_output, normalize
 from repowire.hooks.utils import daemon_post, derive_display_name, pending_cid_path, update_status
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
 
@@ -66,10 +67,10 @@ def main(backend: str = "claude-code") -> int:
     if input_data.get("stop_hook_active", False):
         return 0
 
-    # Always mark peer as online when agent finishes processing
-    cwd = input_data.get("cwd", os.getcwd())
-    session_id = input_data.get("session_id", "")
-    peer_display = derive_display_name(session_id, cwd)
+    payload = normalize(input_data, backend)
+
+    # Mark peer as online when agent finishes processing
+    peer_display = derive_display_name(payload.session_id, payload.cwd or os.getcwd())
     pane_id = get_pane_id()
     if pane_id:
         if not update_status(pane_id, "online", use_pane_id=True):
@@ -84,17 +85,17 @@ def main(backend: str = "claude-code") -> int:
                 file=sys.stderr,
             )
 
-    transcript_path_str = input_data.get("transcript_path")
+    # Get response text: adapter extracts from agent-specific fields,
+    # fall back to transcript parsing for Claude Code
+    assistant_text = payload.response_text
     user_text = None
-    assistant_text = input_data.get("final_response")
-    tool_calls = []
+    tool_calls: list = []
 
-    if transcript_path_str:
-        # Extract and post last turn pair for dashboard
-        transcript_path = Path(transcript_path_str).expanduser().resolve()
-        user_text, transcript_assistant_text = extract_last_turn_pair(transcript_path)
-        if transcript_assistant_text:
-            assistant_text = transcript_assistant_text
+    if payload.transcript_path:
+        transcript_path = Path(payload.transcript_path).expanduser().resolve()
+        user_text, transcript_text = extract_last_turn_pair(transcript_path)
+        if transcript_text:
+            assistant_text = transcript_text
         tool_calls = extract_last_turn_tool_calls(transcript_path) if assistant_text else []
 
     # Strip whitespace-only texts to prevent empty chat bubbles
@@ -112,15 +113,13 @@ def main(backend: str = "claude-code") -> int:
 
     # Deliver response to daemon for query resolution
     if pane_id and assistant_text:
-        payload: dict = {"pane_id": pane_id, "text": assistant_text}
+        resp_payload: dict = {"pane_id": pane_id, "text": assistant_text}
         cid = _pop_pending_cid(pane_id)
         if cid:
-            payload["correlation_id"] = cid
-        daemon_post("/response", payload)
+            resp_payload["correlation_id"] = cid
+        daemon_post("/response", resp_payload)
 
-    # Gemini requires {"decision": "allow"}, Claude/Codex use "approve"
-    if backend == "gemini":
-        print(json.dumps({"decision": "allow"}))
+    hook_output(backend)
     return 0
 
 

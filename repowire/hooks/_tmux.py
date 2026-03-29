@@ -21,12 +21,32 @@ class TmuxInfo(TypedDict):
 
 
 def get_pane_id() -> str | None:
-    """Get the current tmux pane ID from environment.
+    """Get the current tmux pane ID.
 
-    Returns the tmux pane ID (e.g., "%42") or None if not in tmux.
-    Used as a filename stem for hook files (.sid, .pid, correlation, response cache).
+    Prefers TMUX_PANE env var, falls back to querying tmux directly.
+    The fallback handles agents (Codex, Gemini) whose hook subprocesses
+    may not inherit TMUX_PANE.
     """
-    return os.environ.get("TMUX_PANE")
+    pane_id = os.environ.get("TMUX_PANE")
+    if pane_id:
+        return pane_id
+
+    # Fallback: query tmux for the active pane in the current session
+    try:
+        result = subprocess.run(
+            ["tmux", "display-message", "-p", "#{pane_id}"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+        )
+        if result.returncode == 0:
+            pane_id = result.stdout.strip()
+            if pane_id:
+                return pane_id
+    except (subprocess.SubprocessError, FileNotFoundError, OSError):
+        pass
+
+    return None
 
 
 def get_tmux_info() -> TmuxInfo:

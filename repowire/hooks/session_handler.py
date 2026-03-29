@@ -75,9 +75,10 @@ def format_peers_context(peers: list[dict], my_name: str) -> str:
         branch = p.get("metadata", {}).get("branch", "")
         branch_str = f" on {branch}" if branch else ""
         project_name = Path(p.get("path", "")).name or p["name"]
+        agent = p.get("backend", "claude-code")
         desc = p.get("description", "")
-        desc_str = f" — {desc}" if desc else ""
-        lines.append(f"  - {p['name']}{branch_str} ({project_name}){desc_str}")
+        desc_str = f" - {desc}" if desc else ""
+        lines.append(f"  - {p['name']}{branch_str} ({project_name}, {agent}){desc_str}")
 
     lines.append("")
     lines.append(

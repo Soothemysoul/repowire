@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Handle UserPromptSubmit hook - marks peer as BUSY."""
+"""Handle UserPromptSubmit / BeforeAgent hook - marks peer as BUSY."""
 
 from __future__ import annotations
 
@@ -7,19 +7,21 @@ import json
 import sys
 
 from repowire.hooks._tmux import get_pane_id
+from repowire.hooks.adapters import PROMPT_EVENTS, hook_output, normalize
 from repowire.hooks.utils import update_status
 
 
 def main(backend: str = "claude-code") -> int:
-    """Main entry point for UserPromptSubmit hook."""
+    """Main entry point for prompt hook."""
     try:
         input_data = json.loads(sys.stdin.read())
     except json.JSONDecodeError as e:
         print(f"repowire prompt: invalid JSON input: {e}", file=sys.stderr)
         return 0
 
-    event = input_data.get("hook_event_name")
-    if event not in ("UserPromptSubmit", "BeforeAgent"):
+    payload = normalize(input_data, backend)
+
+    if payload.raw.get("hook_event_name") not in PROMPT_EVENTS:
         return 0
 
     pane_id = get_pane_id()
@@ -30,9 +32,7 @@ def main(backend: str = "claude-code") -> int:
                 file=sys.stderr,
             )
 
-    # Gemini requires {"decision": "allow"}, Claude/Codex accept empty output
-    if backend == "gemini":
-        print(json.dumps({"decision": "allow"}))
+    hook_output(backend)
     return 0
 
 
