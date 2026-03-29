@@ -22,6 +22,12 @@ git tag v0.X.Y && git push origin main --tags
 ```
 CI triggers PyPI publish from tags.
 
+**Versioning rules:**
+- Patch (0.x.Y): bug fixes, cleanup, small additions
+- Minor (0.X.0): significant new features or breaking changes
+- After 0.9.x → 0.10.0, 0.11.0, etc. **Never auto-increment to 1.0.0**
+- 1.0.0 is an intentional decision by Prass, not an automatic bump
+
 ## Architecture
 
 ```
