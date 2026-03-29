@@ -343,6 +343,10 @@ uv tool uninstall repowire
 
 To fully clean up: `rm -rf ~/.repowire`
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 MIT
