@@ -75,6 +75,13 @@ That's it. Both sessions auto-register as peers and discover each other. In fron
 
 The agent calls `ask_peer`, backend receives the question, responds, and the answer comes back. Works across Claude Code, Codex, Gemini CLI, and OpenCode — any mix.
 
+Or use the CLI helper to spawn sessions in tmux:
+
+```bash
+repowire peer new ~/projects/frontend
+repowire peer new ~/projects/backend
+```
+
 ## How It Works
 
 All peers connect to a central daemon via **WebSocket**. The daemon routes addressed messages between peers — no pub/sub, no topics. Messages go from peer A to peer B by name.
