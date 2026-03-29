@@ -16,7 +16,9 @@
 
 ## Why?
 
-AI coding agents work great in a single repo, but multi-repo projects need a **context breakout**: a way to get information from other codebases. Most solutions are **async context breakouts** (memory banks, docs, persisted context). Repowire is a **sync context breakout**: live agents talking to each other about current code. An agent in one repo can ask an agent in another repo a question and get a real answer from the actual codebase.
+AI coding agents work great in isolation, but real projects need agents that **talk to each other**. An agent in one repo needs answers from another repo. You need to dispatch work to multiple agents from your phone. A dedicated orchestrator needs to coordinate 10+ peers across projects.
+
+Repowire connects your agents into a live mesh. Any agent can query, notify, or broadcast to any other. You manage the mesh from a dashboard, Telegram, or Slack. It's local-first, works across agent runtimes, and scales from 2 peers to 20+.
 
 Read more: [the context breakout problem](https://prassanna.io/blog/vibe-bottleneck/) and [the idea behind Repowire](https://prassanna.io/blog/repowire/).
 
