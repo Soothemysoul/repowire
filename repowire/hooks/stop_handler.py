@@ -110,8 +110,9 @@ def main(backend: str = "claude-code") -> int:
             payload["correlation_id"] = cid
         daemon_post("/response", payload)
 
-    # For Gemini, always print the decision (Claude is more lenient)
-    print(json.dumps({"decision": "allow"}))
+    # Gemini requires {"decision": "allow"}, Claude/Codex use "approve"
+    if backend == "gemini":
+        print(json.dumps({"decision": "allow"}))
     return 0
 
 

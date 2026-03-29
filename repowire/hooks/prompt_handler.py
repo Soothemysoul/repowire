@@ -30,8 +30,9 @@ def main(backend: str = "claude-code") -> int:
                 file=sys.stderr,
             )
 
-    # For Gemini, always print the decision (Claude is more lenient)
-    print(json.dumps({"decision": "allow"}))
+    # Gemini requires {"decision": "allow"}, Claude/Codex accept empty output
+    if backend == "gemini":
+        print(json.dumps({"decision": "allow"}))
     return 0
 
 
