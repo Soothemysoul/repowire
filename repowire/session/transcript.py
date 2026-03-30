@@ -17,6 +17,7 @@ def extract_last_turn_pair(transcript_path: Path) -> tuple[str | None, str | Non
 
     last_user: str | None = None
     last_assistant: str | None = None
+    last_assistant_had_text: bool = False
 
     with open(transcript_path) as f:
         for line in f:
@@ -35,10 +36,14 @@ def extract_last_turn_pair(transcript_path: Path) -> tuple[str | None, str | Non
 
             if entry_type == "user" and text:
                 last_user = text
-            elif entry_type == "assistant" and text:
-                last_assistant = text
+            elif entry_type == "assistant":
+                # Always track the flag: if this entry had no text (pure tool-use),
+                # don't re-emit the previous text turn when stop fires for this entry.
+                last_assistant_had_text = text is not None
+                if text:
+                    last_assistant = text
 
-    return last_user, last_assistant
+    return last_user, (last_assistant if last_assistant_had_text else None)
 
 
 def extract_last_turn_tool_calls(transcript_path: Path) -> list[dict[str, str]]:

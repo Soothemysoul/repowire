@@ -54,6 +54,31 @@ class TestExtractLastTurnPair:
         assert assistant == "Second answer"
         path.unlink()
 
+    def test_tool_use_only_turn_does_not_repeat_previous_text(self):
+        """Stop hook firing on a pure tool-use turn must not re-emit the previous text response.
+
+        Reproduces the duplicate chat bubble bug: stop fires after a tool-use-only
+        assistant entry; extract_last_turn_pair previously returned the last text-bearing
+        assistant entry (from an earlier turn), causing the dashboard to show the same
+        message twice.
+        """
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            # Turn 1: user asks, assistant responds with text
+            f.write(json.dumps({"type": "user", "message": {"content": "Do something"}}) + "\n")
+            f.write(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "text", "text": "I'll do that now."}
+            ]}}) + "\n")
+            # Turn 2: assistant makes a tool call (no text) — stop hook fires here
+            f.write(json.dumps({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "name": "Bash", "input": {"command": "ls"}}
+            ]}}) + "\n")
+            path = Path(f.name)
+
+        user, assistant = extract_last_turn_pair(path)
+        # Must NOT return the previous "I'll do that now." — that was already posted
+        assert assistant is None
+        path.unlink()
+
     def test_no_user_messages(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
             f.write(
