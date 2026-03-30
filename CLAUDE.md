@@ -205,17 +205,6 @@ Four supported runtimes, all use the same hooks + MCP pattern:
 
 `repowire setup` auto-detects installed CLIs. Backend shows in `list_peers` TSV and peer context injection.
 
-## Known Gotchas
-
-### ~~Pane registration is not evicted on session restart~~ (fixed)
-`allocate_and_register` now calls `_release_pane()` which clears `pane_id` from any peer that previously owned the pane. `get_peer_by_pane` will return the new peer. Old peer remains in the registry until `lazy_repair` evicts it.
-
-### stop_handler derives peer name from session_id, not pane registration
-`stop_handler.py` uses `derive_display_name(payload.session_id, cwd)` — always `session_id[:8]`. This is correct as long as the session that fires the stop hook matches the registered peer. It breaks silently when pane registration drifts (stale ws-hook, session restart). Don't attempt to fix this with a pane lookup in the stop hook without also fixing pane eviction — the stale pane entry will cause the lookup to return the wrong peer.
-
-### Hook handlers bypass the tmux transport abstraction
-`session_handler.py`, `stop_handler.py`, and `websocket_hook.py` use tmux primitives directly (`TMUX_PANE`, flock files, `tmux send-keys`). There is no abstraction layer. Non-tmux injection (VS Code terminal, iTerm2) is not supported without changing these files.
-
 ## Testing Notes
 
 - Route tests: `httpx.AsyncClient` + `ASGITransport`, manually init deps
