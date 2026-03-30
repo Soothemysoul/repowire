@@ -270,6 +270,7 @@ async def ingest_chat_turn(
         peer = await peer_registry.get_peer_by_pane(request.pane_id)
         if peer:
             data["peer_id"] = peer.peer_id
+            data["peer"] = peer.display_name  # canonicalize to registered name
 
     peer_registry.add_event("chat_turn", data)
     return OkResponse()
