@@ -79,22 +79,44 @@ Claude Code → hooks → websocket_hook.py ←WebSocket→ Daemon
 - **UserPromptSubmit** → marks BUSY
 - **Notification** (idle_prompt) → resets ONLINE
 
+In channel mode, only the Stop hook is kept (for dashboard chat_turn events).
+`install_hooks(channel_mode=True)` installs only the Stop hook when using channel transport.
+
 Key files: `session_handler.py`, `stop_handler.py`, `prompt_handler.py`, `notification_handler.py`, `websocket_hook.py`, `utils.py`
 
-### Channel (experimental — `repowire setup --experimental-channels`)
+### Hook Adapter (`hooks/adapters.py`)
+
+Each agent runtime uses different hook event names and response fields. The adapter normalizes them so handlers are agent-agnostic:
+
+| Concept | Claude Code | Codex | Gemini |
+|---------|-------------|-------|--------|
+| Prompt event | `UserPromptSubmit` | `UserPromptSubmit` | `BeforeAgent` |
+| Stop event | `Stop` | `Stop` | `AfterAgent` |
+| Response field | transcript JSONL | `last_assistant_message` | `prompt_response` |
+| Hook output | empty | empty | `{"decision": "allow"}` |
+
+`adapters.normalize()` maps all variants to canonical names. `hook_output()` prints the required stdout.
+
+### MCP Server Identity (`mcp/server.py`)
+
+The MCP server needs to know its own peer_id for `from_peer` in tool calls. Key behaviors:
+- `_ensure_registered()` runs on every MCP tool call (lazy, idempotent)
+- Backend detection: `GEMINI_CLI` env var for Gemini, `.codex/` in PATH for Codex, else claude-code
+- Codex fires SessionStart late (after first interaction, not at startup). The MCP lazy registration covers this gap.
+- `_get_my_peer_name()` caches peer name from pane-based daemon lookup, falls back to cwd folder name
+- Tmux pane fallback: `get_pane_id()` tries `TMUX_PANE` env var, then `tmux display-message` (guarded by `TMUX` env to prevent false positives from non-tmux terminals)
+
+### Channel (experimental - `repowire setup --experimental-channels`)
 
 ```
-Claude Code ←stdio→ channel/server.ts ←WebSocket→ Daemon
+Claude Code <stdio> channel/server.ts <WebSocket> Daemon
 ```
 
 - Messages arrive as `<channel source="repowire" from_peer="..." msg_type="...">` tags
-- Queries include `correlation_id` — Claude calls the `reply` tool to respond
+- Queries include `correlation_id` - Claude calls the `reply` tool to respond
 - Permission relay: forwards tool approval prompts to Telegram/dashboard
 - Requires claude.ai login (not API/Console key), Claude Code v2.1.80+, bun runtime
 - Opt-in only: `repowire setup --experimental-channels`
-
-In channel mode, only the Stop hook is kept (for dashboard chat_turn events).
-`install_hooks(channel_mode=True)` installs only the Stop hook when using channel transport.
 
 ## Design Philosophy: Lazy Repair
 
@@ -157,13 +179,36 @@ Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for d
 TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... repowire telegram start
 ```
 
-- `telegram/bot.py` — ~230 lines, zero extra deps
-- Sticky routing: `/select peer` → all messages go there
-- `@telegram` and `@dashboard` are human — context injection tells agents
+- `telegram/bot.py` - zero extra deps
+- Sticky routing: `/select peer` then all messages go there
+- `@telegram` and `@dashboard` are human - context injection tells agents
+
+## Slack Bot
+
+```bash
+SLACK_BOT_TOKEN=xoxb-... SLACK_APP_TOKEN=xapp-... SLACK_CHANNEL_ID=C... repowire slack start
+```
+
+- `slack/bot.py` - Socket Mode (no public URL), zero extra deps
+- Sticky routing, Block Kit buttons for peer selection
+
+## Agent Types
+
+Four supported runtimes, all use the same hooks + MCP pattern:
+
+| Agent | Backend enum | Installer | Hook config location |
+|-------|-------------|-----------|---------------------|
+| Claude Code | `claude-code` | `installers/claude_code.py` | `~/.claude/settings.json` |
+| Codex | `codex` | `installers/codex.py` | `~/.codex/hooks.json` + `config.toml` |
+| Gemini | `gemini` | `installers/gemini.py` | `~/.gemini/settings.json` |
+| OpenCode | `opencode` | `installers/opencode.py` | `~/.opencode/plugin/repowire.ts` |
+
+`repowire setup` auto-detects installed CLIs. Backend shows in `list_peers` TSV and peer context injection.
 
 ## Testing Notes
 
 - Route tests: `httpx.AsyncClient` + `ASGITransport`, manually init deps
 - WebSocket tests: `httpx-ws` + `ASGIWebSocketTransport`
-- Hooks run from installed package — `uv tool install --force --reinstall .` after changes
-- 222 tests covering routes, WebSocket, auth, query tracker, hooks, config, transcript
+- Hooks run from installed package - `uv tool install --force --reinstall .` after changes
+- Mock `subprocess.Popen` in session handler tests to prevent ws-hook leaking to live daemon
+- 231 tests covering routes, WebSocket, auth, query tracker, hooks, config, transcript

@@ -918,8 +918,8 @@ def peer_list() -> None:
     table = Table(title="Repowire Peers")
     table.add_column("Name", style="cyan")
     table.add_column("Status", style="green")
+    table.add_column("Backend")
     table.add_column("Circle", style="magenta")
-    table.add_column("Tmux Session")
     table.add_column("Path")
 
     for p in peers:
@@ -933,8 +933,8 @@ def peer_list() -> None:
         table.add_row(
             p.get("name", "?"),
             f"[{status_color}]{status}[/]",
+            p.get("backend") or "-",
             p.get("circle") or "global",
-            p.get("tmux_session") or "-",
             p.get("path") or "-",
         )
 
