@@ -21,6 +21,7 @@ import WebSocket from "ws";
 // -- Config --
 
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL ?? "ws://127.0.0.1:8377";
+// Mirrors repowire/hooks/utils.py:derive_display_name (canonical source)
 const DISPLAY_NAME =
   (process.env.CLAUDE_SESSION_ID ?? "").slice(0, 8) || "channel";
 const CIRCLE = process.env.REPOWIRE_CIRCLE ?? "default";
