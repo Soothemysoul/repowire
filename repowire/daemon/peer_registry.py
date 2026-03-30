@@ -107,8 +107,16 @@ class PeerRegistry:
             return
         try:
             data = json.loads(self._mappings_path.read_text())
+            skipped = 0
             for session_id, mapping_data in data.items():
+                path = mapping_data.get("path")
+                if path and not Path(path).exists():
+                    skipped += 1
+                    continue
                 self._mappings[session_id] = SessionMapping(**mapping_data)
+            if skipped:
+                logger.info(f"Skipped {skipped} mappings with non-existent paths")
+                self._mappings_dirty = True
             logger.info(f"Loaded {len(self._mappings)} session mappings")
         except (json.JSONDecodeError, TypeError, ValueError, KeyError) as e:
             backup_ts = int(time.time())
