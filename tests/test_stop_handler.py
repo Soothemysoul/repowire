@@ -43,10 +43,9 @@ class TestStopHandler:
             assert result == 0
 
     @patch("repowire.hooks.stop_handler.daemon_post")
-    @patch("repowire.hooks.stop_handler.daemon_get", return_value=None)
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_posts_chat_turns(self, mock_pane, mock_status, mock_get, mock_post, tmp_path):
+    def test_posts_chat_turns(self, mock_pane, mock_status, mock_post, tmp_path):
         tp = _make_transcript(tmp_path, [
             {"type": "user", "message": {"content": "Fix the bug"}},
             {"type": "assistant", "message": {"content": [
@@ -66,10 +65,9 @@ class TestStopHandler:
         assert "/response" in paths
 
     @patch("repowire.hooks.stop_handler.daemon_post")
-    @patch("repowire.hooks.stop_handler.daemon_get", return_value=None)
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_uses_session_id_as_peer_name_when_pane_lookup_fails(self, mock_pane, mock_status, mock_get, mock_post, tmp_path):
+    def test_uses_session_id_as_peer_name(self, mock_pane, mock_status, mock_post, tmp_path):
         tp = _make_transcript(tmp_path, [
             {"type": "user", "message": {"content": "Hi"}},
             {"type": "assistant", "message": {"content": [
@@ -89,10 +87,9 @@ class TestStopHandler:
         assert payload["peer"] == "abc12345"
 
     @patch("repowire.hooks.stop_handler.daemon_post")
-    @patch("repowire.hooks.stop_handler.daemon_get", return_value=None)
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_includes_tool_calls(self, mock_pane, mock_status, mock_get, mock_post, tmp_path):
+    def test_includes_tool_calls(self, mock_pane, mock_status, mock_post, tmp_path):
         tp = _make_transcript(tmp_path, [
             {"type": "user", "message": {"content": "Run tests"}},
             {"type": "assistant", "message": {"content": [
@@ -122,10 +119,9 @@ class TestStopHandler:
         assert "pytest" in payload["tool_calls"][0]["input"]
 
     @patch("repowire.hooks.stop_handler.daemon_post")
-    @patch("repowire.hooks.stop_handler.daemon_get", return_value=None)
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_chat_turn_includes_pane_id(self, mock_pane, mock_status, mock_get, mock_post, tmp_path):
+    def test_chat_turn_includes_pane_id(self, mock_pane, mock_status, mock_post, tmp_path):
         """Chat turn payloads should include pane_id for server-side peer_id resolution."""
         tp = _make_transcript(tmp_path, [
             {"type": "user", "message": {"content": "Hi"}},
@@ -146,39 +142,9 @@ class TestStopHandler:
             assert payload["pane_id"] == "%42"
 
     @patch("repowire.hooks.stop_handler.daemon_post")
-    @patch("repowire.hooks.stop_handler.daemon_get", return_value={"display_name": "registered-peer"})
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_uses_pane_peer_name_over_session_id(self, mock_pane, mock_status, mock_get, mock_post, tmp_path):
-        """When pane lookup returns a registered peer name, use it instead of session_id.
-
-        Covers the session-restart case: old ws-hook holds the pane registration
-        under name 'registered-peer', but the current session_id would derive
-        a different name. The response must be attributed to 'registered-peer'.
-        """
-        tp = _make_transcript(tmp_path, [
-            {"type": "user", "message": {"content": "Hi"}},
-            {"type": "assistant", "message": {"content": [
-                {"type": "text", "text": "Hello!"},
-            ]}},
-        ])
-        _run_hook({
-            "cwd": str(tmp_path),
-            "session_id": "newses01-rest-of-id",  # would derive "newses01"
-            "transcript_path": str(tp),
-        })
-
-        mock_get.assert_called_once_with("/peers/by-pane/%2542")
-        chat_calls = [c for c in mock_post.call_args_list if c[0][0] == "/events/chat"]
-        assert len(chat_calls) >= 1
-        for call in chat_calls:
-            assert call[0][1]["peer"] == "registered-peer"
-
-    @patch("repowire.hooks.stop_handler.daemon_post")
-    @patch("repowire.hooks.stop_handler.daemon_get", return_value=None)
-    @patch("repowire.hooks.stop_handler.update_status", return_value=True)
-    @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_gemini_after_agent_with_final_response(self, mock_pane, mock_status, mock_get, mock_post):
+    def test_gemini_after_agent_with_final_response(self, mock_pane, mock_status, mock_post):
         """Test Gemini's AfterAgent hook which provides final_response but no transcript_path."""
         _run_hook({
             "hook_event_name": "AfterAgent",

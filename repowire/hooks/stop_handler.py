@@ -9,11 +9,9 @@ import os
 import sys
 from pathlib import Path
 
-from urllib.parse import quote
-
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.utils import daemon_get, daemon_post, derive_display_name, pending_cid_path, update_status
+from repowire.hooks.utils import daemon_post, derive_display_name, pending_cid_path, update_status
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
 
 
@@ -71,18 +69,9 @@ def main(backend: str = "claude-code") -> int:
 
     payload = normalize(input_data, backend)
 
-    pane_id = get_pane_id()
-
-    # Resolve canonical peer name: prefer pane-based lookup so that responses
-    # from restarted sessions are still attributed to the registered peer name,
-    # not the current session_id which may differ after a session restart.
-    peer_display = derive_display_name(payload.session_id, payload.cwd or os.getcwd())
-    if pane_id:
-        result = daemon_get(f"/peers/by-pane/{quote(pane_id, safe='')}")
-        if result and result.get("display_name"):
-            peer_display = result["display_name"]
-
     # Mark peer as online when agent finishes processing
+    peer_display = derive_display_name(payload.session_id, payload.cwd or os.getcwd())
+    pane_id = get_pane_id()
     if pane_id:
         if not update_status(pane_id, "online", use_pane_id=True):
             print(
