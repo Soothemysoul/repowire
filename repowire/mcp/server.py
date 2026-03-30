@@ -96,7 +96,13 @@ async def _ensure_registered() -> None:
         return  # Already registered — skip
     except Exception:
         pass
-    backend = os.environ.get("REPOWIRE_BACKEND", "claude-code")
+    # Detect backend from env set by each agent runtime
+    if os.environ.get("GEMINI_CLI"):
+        backend = "gemini"
+    elif ".codex/" in os.environ.get("PATH", ""):
+        backend = "codex"
+    else:
+        backend = os.environ.get("REPOWIRE_BACKEND", "claude-code")
     try:
         await daemon_request("POST", "/peers", {
             "name": name,
@@ -169,6 +175,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             The peer's response text
         """
+        await _ensure_registered()
         from_peer = await _get_my_peer_name()
         body: dict = {
             "from_peer": from_peer,
@@ -201,6 +208,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
         """
+        await _ensure_registered()
         from_peer = await _get_my_peer_name()
         correlation_id = f"notif-{uuid4().hex[:8]}"
         body: dict = {
@@ -229,6 +237,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
+        await _ensure_registered()
         from_peer = await _get_my_peer_name()
         result = await daemon_request(
             "POST",
@@ -278,6 +287,7 @@ def create_mcp_server() -> FastMCP:
         Returns:
             Confirmation message
         """
+        await _ensure_registered()
         pane_id = get_pane_id()
         name = ""
         if pane_id:
