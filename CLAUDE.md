@@ -207,8 +207,8 @@ Four supported runtimes, all use the same hooks + MCP pattern:
 
 ## Known Gotchas
 
-### Pane registration is not evicted on session restart
-When a new Claude session starts in the same tmux pane as a dead session, the flock releases and the new session registers correctly. But `allocate_and_register` doesn't evict the old peer's pane_id — both old and new peers end up with the same `pane_id` in `_peers`. `get_peer_by_pane` returns the first inserted (old) peer. Impact: `update_status` by pane updates the wrong peer; stale peer lingers until `lazy_repair` evicts it. Fix: evict peers with the same `pane_id` inside `allocate_and_register`.
+### ~~Pane registration is not evicted on session restart~~ (fixed)
+`allocate_and_register` now calls `_release_pane()` which clears `pane_id` from any peer that previously owned the pane. `get_peer_by_pane` will return the new peer. Old peer remains in the registry until `lazy_repair` evicts it.
 
 ### stop_handler derives peer name from session_id, not pane registration
 `stop_handler.py` uses `derive_display_name(payload.session_id, cwd)` — always `session_id[:8]`. This is correct as long as the session that fires the stop hook matches the registered peer. It breaks silently when pane registration drifts (stale ws-hook, session restart). Don't attempt to fix this with a pane lookup in the stop hook without also fixing pane eviction — the stale pane entry will cause the lookup to return the wrong peer.

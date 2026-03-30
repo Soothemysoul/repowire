@@ -290,6 +290,17 @@ class PeerRegistry:
             ):
                 del self._peers[old_sid]
 
+    def _release_pane(self, pane_id: str, new_peer_id: str) -> None:
+        """Clear pane_id from any peer that currently owns it, except new_peer_id.
+
+        When a new ws-hook claims a pane, the old peer's pane registration is
+        stale. Clearing it prevents get_peer_by_pane from returning the wrong
+        peer after a session restart in the same tmux pane. Must hold lock.
+        """
+        for sid, peer in self._peers.items():
+            if peer.pane_id == pane_id and sid != new_peer_id:
+                peer.pane_id = None
+
     # ------------------------------------------------------------------
     # Allocate + register (atomic, the preferred public API)
     # ------------------------------------------------------------------
@@ -314,6 +325,8 @@ class PeerRegistry:
         async with self._lock:
             peer_id = self._find_or_allocate_mapping(display_name, circle, backend, path)
             self._evict_ghosts(display_name, backend, peer_id, circle)
+            if pane_id:
+                self._release_pane(pane_id, peer_id)
 
             # --- create and insert Peer ---
             peer = Peer(
