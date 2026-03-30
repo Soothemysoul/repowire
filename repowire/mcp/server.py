@@ -128,7 +128,7 @@ def create_mcp_server() -> FastMCP:
                 p.get("path") or "",
                 p.get("machine") or "",
                 p.get("description") or "",
-                p.get("backend") or "claude-code",
+                p.get("backend", ""),
             ]
         )
 

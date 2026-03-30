@@ -7,7 +7,7 @@ import json
 import sys
 
 from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.adapters import PROMPT_EVENTS, hook_output, normalize
+from repowire.hooks.adapters import hook_output, normalize
 from repowire.hooks.utils import update_status
 
 
@@ -21,7 +21,7 @@ def main(backend: str = "claude-code") -> int:
 
     payload = normalize(input_data, backend)
 
-    if payload.raw.get("hook_event_name") not in PROMPT_EVENTS:
+    if payload.event != "UserPromptSubmit":
         return 0
 
     pane_id = get_pane_id()

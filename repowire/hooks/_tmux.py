@@ -31,7 +31,12 @@ def get_pane_id() -> str | None:
     if pane_id:
         return pane_id
 
-    # Fallback: query tmux for the active pane in the current session
+    # Fallback: query tmux directly. Only attempt if TMUX env var is set
+    # (proves we're inside a tmux session). Without this guard, we'd get
+    # the most-recently-active pane from a different session - wrong peer.
+    if not os.environ.get("TMUX"):
+        return None
+
     try:
         result = subprocess.run(
             ["tmux", "display-message", "-p", "#{pane_id}"],

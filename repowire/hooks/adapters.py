@@ -16,9 +16,6 @@ _EVENT_MAP = {
     "BeforeAgent": "UserPromptSubmit",
 }
 
-STOP_EVENTS = {"Stop", "AfterAgent"}
-PROMPT_EVENTS = {"UserPromptSubmit", "BeforeAgent"}
-
 
 @dataclass
 class HookPayload:
@@ -38,11 +35,11 @@ def normalize(input_data: dict, backend: str) -> HookPayload:
     raw_event = input_data.get("hook_event_name", "")
     event = _EVENT_MAP.get(raw_event, raw_event)
 
-    # Response text: each agent uses a different field name
-    response_text = (
-        input_data.get("prompt_response")          # Gemini AfterAgent
-        or input_data.get("last_assistant_message")  # Codex Stop
-        or input_data.get("final_response")          # Future/generic
+    # Response text: each agent uses a different field name.
+    # Use explicit None checks so empty strings aren't skipped.
+    _fields = ("prompt_response", "last_assistant_message", "final_response")
+    response_text = next(
+        (input_data[f] for f in _fields if input_data.get(f) is not None), None,
     )
 
     return HookPayload(
