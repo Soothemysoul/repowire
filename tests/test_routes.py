@@ -84,79 +84,80 @@ class TestPeers:
     async def test_register_peer(self, client):
         r = await client.post("/peers", json={
             "name": "testpeer",
-            "display_name": "testpeer",
-            "path": "/tmp/test",
+            "path": "/tmp/testpeer",
             "circle": "default",
             "backend": "claude-code",
         })
         assert r.status_code == 200
+        name = r.json()["display_name"]
+        assert name == "testpeer-claude-code"
 
         r = await client.get("/peers")
         peers = r.json()["peers"]
         assert len(peers) == 1
-        assert peers[0]["display_name"] == "testpeer"
+        assert peers[0]["display_name"] == name
 
     async def test_get_peer_by_name(self, client):
-        await client.post("/peers", json={
+        r = await client.post("/peers", json={
             "name": "mypeer",
-            "display_name": "mypeer",
-            "path": "/tmp/test",
+            "path": "/tmp/mypeer",
             "circle": "default",
             "backend": "claude-code",
         })
-        r = await client.get("/peers/mypeer")
+        name = r.json()["display_name"]
+        r = await client.get(f"/peers/{name}")
         assert r.status_code == 200
-        assert r.json()["display_name"] == "mypeer"
+        assert r.json()["display_name"] == name
 
     async def test_get_peer_not_found(self, client):
         r = await client.get("/peers/nonexistent")
         assert r.status_code == 404
 
     async def test_delete_peer(self, client):
-        await client.post("/peers", json={
+        r = await client.post("/peers", json={
             "name": "delpeer",
-            "display_name": "delpeer",
-            "path": "/tmp/test",
+            "path": "/tmp/delpeer",
             "circle": "default",
             "backend": "claude-code",
         })
-        r = await client.delete("/peers/delpeer")
+        name = r.json()["display_name"]
+        r = await client.delete(f"/peers/{name}")
         assert r.status_code == 200
 
-        r = await client.get("/peers/delpeer")
+        r = await client.get(f"/peers/{name}")
         assert r.status_code == 404
 
     async def test_set_description(self, client):
-        await client.post("/peers", json={
+        r = await client.post("/peers", json={
             "name": "descpeer",
-            "display_name": "descpeer",
-            "path": "/tmp/test",
+            "path": "/tmp/descpeer",
             "circle": "default",
             "backend": "claude-code",
         })
-        r = await client.post("/peers/descpeer/description", json={
+        name = r.json()["display_name"]
+        r = await client.post(f"/peers/{name}/description", json={
             "description": "working on tests",
         })
         assert r.status_code == 200
 
-        r = await client.get("/peers/descpeer")
+        r = await client.get(f"/peers/{name}")
         assert r.json()["description"] == "working on tests"
 
     async def test_register_duplicate_peer(self, client):
         payload = {
             "name": "dup",
-            "display_name": "dup",
-            "path": "/tmp/test",
+            "path": "/tmp/dup",
             "circle": "default",
             "backend": "claude-code",
         }
-        await client.post("/peers", json=payload)
+        r1 = await client.post("/peers", json=payload)
+        name = r1.json()["display_name"]
         r = await client.post("/peers", json=payload)
         assert r.status_code == 200
 
         r = await client.get("/peers")
         names = [p["display_name"] for p in r.json()["peers"]]
-        assert names.count("dup") == 1
+        assert names.count(name) == 1
 
 
 # -- Events --
@@ -244,11 +245,10 @@ class TestEvents:
         from repowire.config.models import AgentType
         from repowire.daemon.deps import get_peer_registry
         registry = get_peer_registry()
-        await registry.allocate_and_register(
-            display_name="panepeer",
+        _peer_id, _name = await registry.allocate_and_register(
             circle="default",
             backend=AgentType.CLAUDE_CODE,
-            path="/tmp/test",
+            path="/tmp/panepeer",
             pane_id="%99",
         )
 
@@ -312,18 +312,18 @@ class TestBroadcast:
 
 class TestSessionUpdate:
     async def test_update_by_peer_name(self, client):
-        await client.post("/peers", json={
+        r = await client.post("/peers", json={
             "name": "statuspeer",
-            "display_name": "statuspeer",
-            "path": "/tmp/test",
+            "path": "/tmp/statuspeer",
             "circle": "default",
             "backend": "claude-code",
         })
+        name = r.json()["display_name"]
         r = await client.post("/session/update", json={
-            "peer_name": "statuspeer",
+            "peer_name": name,
             "status": "busy",
         })
         assert r.status_code == 200
 
-        r = await client.get("/peers/statuspeer")
+        r = await client.get(f"/peers/{name}")
         assert r.json()["status"] == "busy"

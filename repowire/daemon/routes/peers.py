@@ -62,7 +62,6 @@ class RegisterPeerRequest(BaseModel):
     """Request to register a peer."""
 
     name: str = Field(..., min_length=1, pattern=r"^[a-zA-Z0-9._-]+$", description="Peer name")
-    display_name: str | None = Field(None, description="Human-readable name")
     path: str | None = Field(None, description="Working directory path")
     machine: str | None = Field(None, description="Machine hostname")
     tmux_session: str | None = Field(None, description="Tmux session:window")
@@ -130,14 +129,23 @@ async def get_peer(
     )
 
 
-async def _register_peer_impl(request: RegisterPeerRequest) -> None:
-    """Shared implementation for peer registration endpoints."""
-    display_name = request.display_name or request.name
+class RegisterResponse(BaseModel):
+    """Response from peer registration with daemon-assigned identity."""
+
+    ok: bool = True
+    peer_id: str
+    display_name: str
+
+
+async def _register_peer_impl(request: RegisterPeerRequest) -> tuple[str, str]:
+    """Shared implementation for peer registration endpoints.
+
+    Returns (peer_id, assigned_display_name).
+    """
     circle = request.circle or "global"
 
     peer_registry = get_peer_registry()
-    await peer_registry.allocate_and_register(
-        display_name=display_name,
+    peer_id, display_name = await peer_registry.allocate_and_register(
         circle=circle,
         backend=request.backend,
         path=request.path or "",
@@ -145,16 +153,17 @@ async def _register_peer_impl(request: RegisterPeerRequest) -> None:
         metadata=request.metadata,
         machine=request.machine or socket.gethostname(),
     )
+    return peer_id, display_name
 
 
-@router.post("/peers", response_model=OkResponse)
+@router.post("/peers", response_model=RegisterResponse)
 async def create_peer(
     request: RegisterPeerRequest,
     _: str | None = Depends(require_auth),
-) -> OkResponse:
+) -> RegisterResponse:
     """Register a new peer (CLI-friendly endpoint)."""
-    await _register_peer_impl(request)
-    return OkResponse()
+    peer_id, display_name = await _register_peer_impl(request)
+    return RegisterResponse(peer_id=peer_id, display_name=display_name)
 
 
 async def _unregister_peer_impl(name: str, circle: str | None = None) -> None:
@@ -248,14 +257,14 @@ async def set_peer_circle_endpoint(
 # Legacy endpoints for backward compatibility
 
 
-@router.post("/peer/register", response_model=OkResponse)
+@router.post("/peer/register", response_model=RegisterResponse)
 async def register_peer(
     request: RegisterPeerRequest,
     _: str | None = Depends(require_auth),
-) -> OkResponse:
+) -> RegisterResponse:
     """Register a new peer in the mesh (legacy endpoint)."""
-    await _register_peer_impl(request)
-    return OkResponse()
+    peer_id, display_name = await _register_peer_impl(request)
+    return RegisterResponse(peer_id=peer_id, display_name=display_name)
 
 
 @router.post("/peer/unregister", response_model=OkResponse)

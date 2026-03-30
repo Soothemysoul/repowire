@@ -16,13 +16,9 @@ export interface Peer {
   };
 }
 
-/** Human-readable label: project folder > session ID */
+/** Human-readable label: display_name is daemon-assigned and human-friendly. */
 export function peerLabel(peer: Peer): string {
-  if (peer.path) {
-    const folder = peer.path.split("/").pop();
-    if (folder) return folder;
-  }
-  return peer.name;
+  return peer.display_name || peer.name;
 }
 
 export interface Event {

@@ -13,19 +13,16 @@ from mcp.server.fastmcp import FastMCP
 
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._tmux import get_pane_id
-from repowire.hooks.utils import derive_display_name
+from repowire.hooks.utils import get_display_name
 
 logger = logging.getLogger(__name__)
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
 
-# Cached: peer identity is stable for the lifetime of this MCP process.
-_my_peer_name: str = derive_display_name(os.environ.get("CLAUDE_SESSION_ID"), str(Path.cwd()))
-
 # Lazy singleton HTTP client — reused across all daemon requests
 _http_client: httpx.AsyncClient | None = None
 
-# Cached peer name from pane-based lookup (stable for MCP process lifetime)
+# Cached peer name: resolved lazily from env var, pane lookup, or registration
 _cached_peer_name: str | None = None
 
 # Lazy registration: ensure peer is registered on first MCP tool use
@@ -61,21 +58,27 @@ async def daemon_request(method: str, path: str, body: dict | None = None) -> di
 
 
 async def _get_my_peer_name() -> str:
-    """Get own peer name, preferring pane-based lookup. Cached after first resolution."""
+    """Get own peer name. Cached after first resolution.
+
+    Priority: REPOWIRE_DISPLAY_NAME env var > pane-based daemon lookup > cwd folder name.
+    """
     global _cached_peer_name
     if _cached_peer_name is not None:
         return _cached_peer_name
+    # Pane-based lookup is most authoritative (handles suffix collisions)
     pane_id = get_pane_id()
     if pane_id:
         try:
             result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
-            name = result.get("display_name") or result.get("peer_id") or _my_peer_name
-            _cached_peer_name = name
-            return name
+            name = result.get("display_name") or result.get("peer_id")
+            if name:
+                _cached_peer_name = name
+                return name
         except Exception:
             pass
-    _cached_peer_name = _my_peer_name
-    return _my_peer_name
+    # Fall back to env var (set by session handler) or cwd folder name
+    _cached_peer_name = get_display_name()
+    return _cached_peer_name
 
 
 async def _ensure_registered() -> None:
@@ -85,15 +88,14 @@ async def _ensure_registered() -> None:
     already registered it). Only registers as fallback for agents where
     hooks don't fire (one-shot prompt mode).
     """
-    global _registered
+    global _registered, _cached_peer_name
     if _registered:
         return
     _registered = True
     name = await _get_my_peer_name()
     try:
-        # Check if peer already registered (by hook or previous session)
         await daemon_request("GET", f"/peers/{name}")
-        return  # Already registered — skip
+        return  # Already registered -- skip
     except Exception:
         pass
     # Detect backend from env set by each agent runtime
@@ -104,15 +106,18 @@ async def _ensure_registered() -> None:
     else:
         backend = os.environ.get("REPOWIRE_BACKEND", "claude-code")
     try:
-        await daemon_request("POST", "/peers", {
-            "name": name,
-            "display_name": name,
+        result = await daemon_request("POST", "/peers", {
+            "name": Path.cwd().name,
             "path": str(Path.cwd()),
             "circle": "default",
             "backend": backend,
         })
+        # Cache the daemon-assigned name
+        assigned = result.get("display_name")
+        if assigned:
+            _cached_peer_name = assigned
     except Exception:
-        pass  # Best-effort — daemon may be down
+        pass  # Best-effort -- daemon may be down
 
 
 def create_mcp_server() -> FastMCP:
@@ -269,11 +274,12 @@ def create_mcp_server() -> FastMCP:
             except Exception:
                 pass  # fall through to fallback
 
+        name = await _get_my_peer_name()
         try:
-            result = await daemon_request("GET", f"/peers/{_my_peer_name}")
+            result = await daemon_request("GET", f"/peers/{name}")
             return _format_peer_tsv(result)
         except Exception as e:
-            return f"{tsv_header}\n\t{_my_peer_name}\t\t\tERROR: {e}\t\t\t"
+            return f"{tsv_header}\n\t{name}\t\t\tERROR: {e}\t\t\t"
 
     @mcp.tool()
     async def set_description(description: str) -> str:
@@ -297,7 +303,7 @@ def create_mcp_server() -> FastMCP:
             except Exception as e:
                 logger.warning("Could not get peer name by pane_id '%s': %s", pane_id, e)
         if not name:
-            name = _my_peer_name
+            name = await _get_my_peer_name()
         await daemon_request("POST", f"/peers/{name}/description", {"description": description})
         return f"description updated: {description}"
 

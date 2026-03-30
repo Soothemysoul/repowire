@@ -141,32 +141,32 @@ class TestSessionUpdate:
         t = ASGITransport(app=app)
         async with AsyncClient(transport=t, base_url="http://test") as c:
             # Register a peer
-            await c.post("/peers", json={
+            reg = await c.post("/peers", json={
                 "name": "worker",
-                "display_name": "worker",
-                "path": "/tmp/test",
+                "path": "/tmp/worker",
                 "circle": "default",
                 "backend": "claude-code",
             })
+            name = reg.json()["display_name"]
 
             # Update to busy
             r = await c.post("/session/update", json={
-                "peer_name": "worker",
+                "peer_name": name,
                 "status": "busy",
             })
             assert r.status_code == 200
 
             # Verify status
-            r = await c.get("/peers/worker")
+            r = await c.get(f"/peers/{name}")
             assert r.json()["status"] == "busy"
 
             # Update back to online
             r = await c.post("/session/update", json={
-                "peer_name": "worker",
+                "peer_name": name,
                 "status": "online",
             })
             assert r.status_code == 200
-            r = await c.get("/peers/worker")
+            r = await c.get(f"/peers/{name}")
             assert r.json()["status"] == "online"
 
         cleanup_deps()
@@ -190,17 +190,17 @@ class TestPeerOffline:
         app = _make_app(tmp_path)
         t = ASGITransport(app=app)
         async with AsyncClient(transport=t, base_url="http://test") as c:
-            await c.post("/peers", json={
+            reg = await c.post("/peers", json={
                 "name": "dying",
-                "display_name": "dying",
-                "path": "/tmp/test",
+                "path": "/tmp/dying",
                 "circle": "default",
                 "backend": "claude-code",
             })
-            r = await c.post("/peers/dying/offline")
+            name = reg.json()["display_name"]
+            r = await c.post(f"/peers/{name}/offline")
             assert r.status_code == 200
 
-            r = await c.get("/peers/dying")
+            r = await c.get(f"/peers/{name}")
             assert r.json()["status"] == "offline"
 
         cleanup_deps()

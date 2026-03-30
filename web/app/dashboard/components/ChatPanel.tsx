@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { ChevronRight } from "lucide-react";
 import { cn } from "../lib/utils";
+import { peerLabel } from "../types";
 import type { Peer, Event } from "../types";
 
 interface ChatPanelProps {
@@ -59,7 +60,7 @@ export function ChatPanel({ peer, events }: ChatPanelProps) {
   if (filtered.length === 0) {
     return (
       <div className="flex items-center justify-center h-full text-zinc-600 text-sm">
-        No activity for {peer.name} yet
+        No activity for {peerLabel(peer)} yet
       </div>
     );
   }
@@ -72,7 +73,7 @@ export function ChatPanel({ peer, events }: ChatPanelProps) {
           return (
             <div key={event.id} className={cn("flex flex-col gap-1", isUser ? "items-end" : "items-start")}>
               <span className="text-[10px] text-zinc-500 font-mono px-1">
-                {isUser ? "user" : peer.name}
+                {isUser ? "user" : peerLabel(peer)}
               </span>
               <div
                 className={cn(

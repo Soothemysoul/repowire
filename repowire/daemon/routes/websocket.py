@@ -120,8 +120,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             path = normalized_path
 
         # Allocate peer_id and register atomically
-        peer_id = await peer_registry.allocate_and_register(
-            display_name=display_name,
+        peer_id, assigned_name = await peer_registry.allocate_and_register(
             circle=circle,
             backend=backend,
             path=path,
@@ -134,9 +133,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Register with transport (handles connection + status tracking)
         await transport.connect(session_id, websocket)
 
-        # Send connect response
-        await websocket.send_json({"type": "connected", "session_id": session_id})
-        logger.info(f"WebSocket connected: {display_name}@{circle} ({session_id}, {backend})")
+        # Send connect response with daemon-assigned name
+        await websocket.send_json({
+            "type": "connected",
+            "session_id": session_id,
+            "display_name": assigned_name,
+        })
+        logger.info(f"WebSocket connected: {assigned_name}@{circle} ({session_id}, {backend})")
 
         # Message loop
         while True:

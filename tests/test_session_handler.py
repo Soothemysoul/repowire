@@ -83,7 +83,7 @@ class TestSessionMain:
         assert result == 0
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
-    @patch("repowire.hooks.session_handler._register_peer_http", return_value=True)
+    @patch("repowire.hooks.session_handler._register_peer_http", return_value="test-claude-code")
     @patch("repowire.hooks.session_handler.get_tmux_info",
            return_value={"pane_id": "%1", "session_name": "default", "window_name": "test"})
     @patch("repowire.hooks.session_handler.subprocess.Popen")
@@ -97,10 +97,11 @@ class TestSessionMain:
             assert result == 0
             mock_register.assert_called_once()
             call_args = mock_register.call_args
-            assert call_args[0][0] == "abc12345"  # display_name from session_id[:8]
+            # First positional arg is now path (cwd), not display_name
+            assert call_args[0][0] == str(tmp_path)
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
-    @patch("repowire.hooks.session_handler._register_peer_http", return_value=True)
+    @patch("repowire.hooks.session_handler._register_peer_http", return_value="test-claude-code")
     @patch("repowire.hooks.session_handler.get_tmux_info",
            return_value={"pane_id": "%1", "session_name": "default", "window_name": "test"})
     def test_second_session_start_skips_ws_hook(self, mock_tmux, mock_register, mock_fetch, tmp_path):

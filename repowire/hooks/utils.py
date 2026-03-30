@@ -21,18 +21,15 @@ def get_pane_file(pane_id: str | None) -> str:
 
 
 def get_display_name() -> str:
-    """Get display name from env var or cwd folder name."""
+    """Read daemon-assigned display name from REPOWIRE_DISPLAY_NAME env var.
+
+    Set by session_handler after registering with the daemon.
+    Falls back to cwd folder name if env var not set.
+    """
     name = os.environ.get("REPOWIRE_DISPLAY_NAME")
     if name:
         return name
     return Path.cwd().name
-
-
-def derive_display_name(session_id: str | None, cwd: str) -> str:
-    """Derive display name from Claude session_id (first 8 chars) or cwd folder name."""
-    if session_id:
-        return session_id[:8]
-    return Path(cwd).name
 
 
 def pending_cid_path(pane_id: str) -> Path:

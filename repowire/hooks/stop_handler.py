@@ -5,13 +5,12 @@ from __future__ import annotations
 
 import fcntl
 import json
-import os
 import sys
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.utils import daemon_post, derive_display_name, pending_cid_path, update_status
+from repowire.hooks.utils import daemon_post, get_display_name, pending_cid_path, update_status
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
 
 
@@ -70,7 +69,7 @@ def main(backend: str = "claude-code") -> int:
     payload = normalize(input_data, backend)
 
     # Mark peer as online when agent finishes processing
-    peer_display = derive_display_name(payload.session_id, payload.cwd or os.getcwd())
+    peer_display = get_display_name()
     pane_id = get_pane_id()
     if pane_id:
         if not update_status(pane_id, "online", use_pane_id=True):

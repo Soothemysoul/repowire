@@ -67,7 +67,8 @@ class TestStopHandler:
     @patch("repowire.hooks.stop_handler.daemon_post")
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_uses_session_id_as_peer_name(self, mock_pane, mock_status, mock_post, tmp_path):
+    @patch("repowire.hooks.stop_handler.get_display_name", return_value="myproject-claude-code")
+    def test_uses_display_name_as_peer_name(self, mock_name, mock_pane, mock_status, mock_post, tmp_path):
         tp = _make_transcript(tmp_path, [
             {"type": "user", "message": {"content": "Hi"}},
             {"type": "assistant", "message": {"content": [
@@ -80,11 +81,11 @@ class TestStopHandler:
             "transcript_path": str(tp),
         })
 
-        # peer name should be first 8 chars of session_id
+        # peer name should come from get_display_name (daemon-assigned)
         chat_calls = [c for c in mock_post.call_args_list if c[0][0] == "/events/chat"]
         assert len(chat_calls) >= 1
         payload = chat_calls[0][0][1]
-        assert payload["peer"] == "abc12345"
+        assert payload["peer"] == "myproject-claude-code"
 
     @patch("repowire.hooks.stop_handler.daemon_post")
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
@@ -144,7 +145,8 @@ class TestStopHandler:
     @patch("repowire.hooks.stop_handler.daemon_post")
     @patch("repowire.hooks.stop_handler.update_status", return_value=True)
     @patch("repowire.hooks.stop_handler.get_pane_id", return_value="%42")
-    def test_gemini_after_agent_with_final_response(self, mock_pane, mock_status, mock_post):
+    @patch("repowire.hooks.stop_handler.get_display_name", return_value="test-gemini")
+    def test_gemini_after_agent_with_final_response(self, mock_name, mock_pane, mock_status, mock_post):
         """Test Gemini's AfterAgent hook which provides final_response but no transcript_path."""
         _run_hook({
             "hook_event_name": "AfterAgent",
@@ -160,7 +162,7 @@ class TestStopHandler:
         chat_calls = [c for c in mock_post.call_args_list if c[0][0] == "/events/chat"]
         assert len(chat_calls) == 1
         payload = chat_calls[0][0][1]
-        assert payload["peer"] == "gemini12"
+        assert payload["peer"] == "test-gemini"
         assert payload["role"] == "assistant"
         assert payload["text"] == "I am finished."
 

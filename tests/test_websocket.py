@@ -157,6 +157,8 @@ class TestWebSocketConnect:
             })
             resp = json.loads(await ws.receive_text())
             assert resp["type"] == "connected"
+            assigned_name = resp["display_name"]
+            assert assigned_name == "ws-test-claude-code"
 
             # Check peer list via HTTP
             t = ASGITransport(app=app)
@@ -164,7 +166,7 @@ class TestWebSocketConnect:
                 r = await c.get("/peers")
                 peers_list = r.json()["peers"]
                 names = [p["display_name"] for p in peers_list]
-                assert "wspeer" in names
+                assert assigned_name in names
 
         cleanup_deps()
 
@@ -191,9 +193,11 @@ class TestWebSocketMessages:
                 "display_name": "statuspeer",
                 "circle": "default",
                 "backend": "claude-code",
+                "path": "/tmp/statuspeer",
             })
             resp = json.loads(await ws.receive_text())
             assert resp["type"] == "connected"
+            assigned_name = resp["display_name"]
 
             # Send status update
             await ws.send_json({"type": "status", "status": "busy"})
@@ -204,7 +208,7 @@ class TestWebSocketMessages:
             # Verify via HTTP
             t = ASGITransport(app=app)
             async with AsyncClient(transport=t, base_url="http://test") as c:
-                r = await c.get("/peers/statuspeer")
+                r = await c.get(f"/peers/{assigned_name}")
                 assert r.json()["status"] == "busy"
 
         cleanup_deps()

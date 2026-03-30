@@ -132,15 +132,17 @@ async def test_new_pane_registration_clears_old_peer_pane_id(tmp_path):
     registry = _make_registry(tmp_path)
 
     # Old session registers with pane %1
-    old_id = await registry.allocate_and_register(
-        display_name="oldsess", circle="dev", backend=AgentType.CLAUDE_CODE, pane_id="%1"
+    old_id, old_name = await registry.allocate_and_register(
+        circle="dev", backend=AgentType.CLAUDE_CODE,
+        path="/tmp/oldsess", pane_id="%1",
     )
     old_pane_peer = await registry.get_peer_by_pane("%1")
     assert old_pane_peer is not None and old_pane_peer.peer_id == old_id
 
     # New session starts in the same pane after old ws-hook dies
-    new_id = await registry.allocate_and_register(
-        display_name="newsess", circle="dev", backend=AgentType.CLAUDE_CODE, pane_id="%1"
+    new_id, new_name = await registry.allocate_and_register(
+        circle="dev", backend=AgentType.CLAUDE_CODE,
+        path="/tmp/newsess", pane_id="%1",
     )
 
     # Pane now resolves to the new session
@@ -149,6 +151,6 @@ async def test_new_pane_registration_clears_old_peer_pane_id(tmp_path):
     assert peer.peer_id == new_id
 
     # Old peer still exists but no longer owns the pane
-    old_peer = await registry.get_peer("oldsess")
+    old_peer = await registry.get_peer(old_name)
     assert old_peer is not None
     assert old_peer.pane_id is None

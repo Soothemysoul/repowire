@@ -21,9 +21,8 @@ import WebSocket from "ws";
 // -- Config --
 
 const DAEMON_URL = process.env.REPOWIRE_DAEMON_URL ?? "ws://127.0.0.1:8377";
-// Mirrors repowire/hooks/utils.py:derive_display_name (canonical source)
-const DISPLAY_NAME =
-  (process.env.CLAUDE_SESSION_ID ?? "").slice(0, 8) || "channel";
+// Proposed name for initial connect; daemon assigns the canonical display_name
+const PROPOSED_NAME = process.env.REPOWIRE_DISPLAY_NAME ?? "channel";
 const CIRCLE = process.env.REPOWIRE_CIRCLE ?? "default";
 const PROJECT_PATH = process.cwd();
 
@@ -31,6 +30,7 @@ const PROJECT_PATH = process.cwd();
 
 let ws: WebSocket | null = null;
 let sessionId: string | null = null;
+let displayName: string = PROPOSED_NAME;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 const pendingCorrelations = new Map<string, string>(); // correlation_id -> from_peer
 
@@ -43,7 +43,7 @@ function connectDaemon(mcp: Server): void {
     ws!.send(
       JSON.stringify({
         type: "connect",
-        display_name: DISPLAY_NAME,
+        display_name: PROPOSED_NAME,
         circle: CIRCLE,
         backend: "claude-code",
         path: PROJECT_PATH,
@@ -62,7 +62,8 @@ function connectDaemon(mcp: Server): void {
 
     if (msg.type === "connected") {
       sessionId = msg.session_id;
-      console.error(`repowire: connected as ${sessionId}`);
+      if (msg.display_name) displayName = msg.display_name;
+      console.error(`repowire: connected as ${displayName} (${sessionId})`);
       return;
     }
 
@@ -131,7 +132,7 @@ async function fetchPeerContext(): Promise<string> {
     if (online.length === 0) return "";
 
     const lines = online
-      .filter((p) => p.display_name !== DISPLAY_NAME)
+      .filter((p) => p.display_name !== displayName)
       .map((p) => {
         const name = p.display_name ?? p.name ?? "?";
         const folder = (p.path ?? "").split("/").pop() || name;
@@ -253,7 +254,7 @@ mcp.setNotificationHandler(PermissionRequestSchema, async ({ params }) => {
     ws.send(
       JSON.stringify({
         type: "notify",
-        from_peer: DISPLAY_NAME,
+        from_peer: displayName,
         text:
           `🔐 Permission request: ${params.tool_name}\n` +
           `${params.description}\n\n` +

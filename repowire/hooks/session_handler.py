@@ -12,23 +12,26 @@ from pathlib import Path
 
 from repowire.config.models import CACHE_DIR, AgentType
 from repowire.hooks._tmux import get_tmux_info
-from repowire.hooks.utils import daemon_get, daemon_post, derive_display_name, get_pane_file
+from repowire.hooks.utils import daemon_get, daemon_post, get_pane_file
 
 
 def _register_peer_http(
-    display_name: str, path: str, circle: str, backend: AgentType, metadata: dict | None = None
-) -> bool:
-    """Register peer via HTTP POST /peers (upsert-safe)."""
+    path: str, circle: str, backend: AgentType, metadata: dict | None = None
+) -> str | None:
+    """Register peer via HTTP POST /peers. Returns daemon-assigned display_name."""
+    folder = Path(path).name
     payload: dict = {
-        "name": display_name,
-        "display_name": display_name,
+        "name": folder,
         "path": path,
         "circle": circle,
         "backend": backend,
     }
     if metadata:
         payload["metadata"] = metadata
-    return daemon_post("/peers", payload) is not None
+    result = daemon_post("/peers", payload)
+    if result:
+        return result.get("display_name")
+    return None
 
 
 def get_peer_name(cwd: str) -> str:
@@ -114,7 +117,6 @@ def main(backend: str = "claude-code") -> int:
 
     event = input_data.get("hook_event_name")
     cwd = input_data.get("cwd", os.getcwd())
-    claude_session_id = input_data.get("session_id", "")
 
     # Convert backend string to AgentType
     try:
@@ -143,8 +145,12 @@ def main(backend: str = "claude-code") -> int:
             lock_fd.close()
             return 0  # ws-hook alive → ephemeral sub-session, skip entirely
 
-        # Derive stable name from first 8 chars of Claude's session_id
-        display_name = derive_display_name(claude_session_id, cwd)
+        # Register peer via HTTP -- daemon assigns the display_name.
+        circle = tmux_info["session_name"] or "default"
+        metadata = {"project": folder_name}
+        display_name = _register_peer_http(cwd, circle, backend_type, metadata=metadata)
+        if not display_name:
+            display_name = folder_name  # fallback if daemon unreachable
 
         # Launch async WebSocket hook in background — one per pane.
         try:
@@ -173,11 +179,6 @@ def main(backend: str = "claude-code") -> int:
                     lock_fd.close()  # child inherits flock; parent releases fd
         except Exception as e:
             print(f"repowire: failed to start WebSocket hook: {e}", file=sys.stderr)
-
-        # Register peer via HTTP.
-        circle = tmux_info["session_name"] or "default"
-        metadata = {"project": folder_name}
-        _register_peer_http(display_name, cwd, circle, backend_type, metadata=metadata)
 
         # Fetch peers and output context for Claude
         peers = fetch_peers()

@@ -12,6 +12,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from collections import deque
 from dataclasses import asdict, dataclass
@@ -242,6 +243,68 @@ class PeerRegistry:
         active = [p for p in matches if p.status != PeerStatus.OFFLINE]
         return active[0] if active else matches[0]
 
+    @staticmethod
+    def _sanitize_folder_name(name: str) -> str:
+        """Sanitize a folder name for use in display_name.
+
+        Replaces characters not matching [a-zA-Z0-9._-] with hyphens,
+        collapses runs, strips leading/trailing hyphens.
+        """
+        sanitized = re.sub(r"[^a-zA-Z0-9._-]", "-", name)
+        sanitized = re.sub(r"-{2,}", "-", sanitized)
+        sanitized = sanitized.strip("-")
+        return sanitized or "peer"
+
+    def _build_display_name(
+        self, path: str, circle: str, backend: AgentType,
+    ) -> str:
+        """Build a unique display_name for a peer. Must hold lock.
+
+        Format: {folder}-{backend}[-{suffix}]
+        Prunes offline peers that hold a conflicting name (clean takeover).
+        """
+        folder = self._sanitize_folder_name(Path(path).name) if path else "peer"
+        base = f"{folder}-{backend.value}"
+
+        candidate = base
+        suffix = 2
+        while True:
+            blocker = None
+            for sid, peer in self._peers.items():
+                if peer.display_name == candidate and peer.circle == circle:
+                    blocker = (sid, peer)
+                    break
+
+            if blocker is None:
+                self._prune_name_from_mappings(candidate, circle, backend)
+                return candidate
+
+            sid, peer = blocker
+            if peer.status == PeerStatus.OFFLINE:
+                # Prune the offline peer entirely (clean takeover)
+                del self._peers[sid]
+                self._mappings.pop(sid, None)
+                self._mappings_dirty = True
+                logger.info(f"Pruned offline peer {candidate} ({sid}) for name reclaim")
+                return candidate
+
+            # Name held by an active peer -- try next suffix
+            candidate = f"{folder}-{suffix}-{backend.value}"
+            suffix += 1
+
+    def _prune_name_from_mappings(
+        self, display_name: str, circle: str, backend: AgentType,
+    ) -> None:
+        """Remove orphaned mappings for a name not held by any live peer. Must hold lock."""
+        to_remove = [
+            sid for sid, m in self._mappings.items()
+            if m.display_name == display_name and m.circle == circle and m.backend == backend
+            and sid not in self._peers
+        ]
+        for sid in to_remove:
+            del self._mappings[sid]
+            self._mappings_dirty = True
+
     def _find_or_allocate_mapping(
         self,
         display_name: str,
@@ -277,19 +340,6 @@ class PeerRegistry:
         self._mappings_dirty = True
         return session_id
 
-    def _evict_ghosts(
-        self, display_name: str, backend: AgentType, new_peer_id: str, circle: str,
-    ) -> None:
-        """Evict stale peers with same (display_name, backend). Must hold lock."""
-        for old_sid, old_peer in list(self._peers.items()):
-            if (
-                old_peer.display_name == display_name
-                and old_peer.backend == backend
-                and old_sid != new_peer_id
-                and (old_peer.circle == circle or old_peer.status == PeerStatus.OFFLINE)
-            ):
-                del self._peers[old_sid]
-
     def _release_pane(self, pane_id: str, new_peer_id: str) -> None:
         """Clear pane_id from any peer that currently owns it, except new_peer_id.
 
@@ -307,7 +357,7 @@ class PeerRegistry:
 
     async def allocate_and_register(
         self,
-        display_name: str,
+        *,
         circle: str,
         backend: AgentType,
         path: str | None = None,
@@ -315,23 +365,24 @@ class PeerRegistry:
         tmux_session: str | None = None,
         metadata: dict | None = None,
         machine: str = "unknown",
-    ) -> str:
-        """Allocate a peer_id and register the peer atomically. Returns peer_id.
+    ) -> tuple[str, str]:
+        """Allocate a peer_id and register the peer atomically.
 
-        If a mapping with the same (display_name, circle, backend) exists,
-        its peer_id is reused. Otherwise a new ``repow-{circle}-{uuid8}``
-        is generated. Ghost eviction runs under the same lock.
+        Returns (peer_id, assigned_display_name). The daemon builds the
+        display_name from path + backend, auto-suffixing on collision and
+        pruning offline peers for clean name takeover.
         """
         async with self._lock:
-            peer_id = self._find_or_allocate_mapping(display_name, circle, backend, path)
-            self._evict_ghosts(display_name, backend, peer_id, circle)
+            # Daemon owns the name: build it from path + backend
+            assigned_name = self._build_display_name(path or "", circle, backend)
+            peer_id = self._find_or_allocate_mapping(assigned_name, circle, backend, path)
             if pane_id:
                 self._release_pane(pane_id, peer_id)
 
             # --- create and insert Peer ---
             peer = Peer(
                 peer_id=peer_id,
-                display_name=display_name,
+                display_name=assigned_name,
                 circle=circle,
                 backend=backend,
                 status=PeerStatus.ONLINE,
@@ -343,9 +394,9 @@ class PeerRegistry:
                 metadata=metadata or {},
             )
             self._peers[peer_id] = peer
-            logger.info(f"Peer registered: {display_name} ({peer_id})")
+            logger.info(f"Peer registered: {assigned_name} ({peer_id})")
 
-            return peer_id
+            return peer_id, assigned_name
 
     # ------------------------------------------------------------------
     # register_peer (backward-compat for tests that build Peer objects)
@@ -354,12 +405,20 @@ class PeerRegistry:
     async def register_peer(self, peer: Peer) -> None:
         """Register a pre-built Peer in the mesh.
 
-        Indexed by peer_id. Performs ghost eviction but does NOT create or
-        update session mappings — use ``allocate_and_register`` for the full
-        atomic path.
+        Indexed by peer_id. Evicts stale same-name peers but does NOT create
+        or update session mappings -- use ``allocate_and_register`` for the
+        full atomic path.
         """
         async with self._lock:
-            self._evict_ghosts(peer.display_name, peer.backend, peer.peer_id, peer.circle)
+            # Evict offline peers with same (display_name, backend)
+            for old_sid, old_peer in list(self._peers.items()):
+                if (
+                    old_peer.display_name == peer.display_name
+                    and old_peer.backend == peer.backend
+                    and old_sid != peer.peer_id
+                    and (old_peer.circle == peer.circle or old_peer.status == PeerStatus.OFFLINE)
+                ):
+                    del self._peers[old_sid]
             peer.status = PeerStatus.ONLINE
             peer.last_seen = datetime.now(timezone.utc)
             self._peers[peer.peer_id] = peer

@@ -118,7 +118,7 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
                       )}
                     >
                       <span className="w-2 h-2 rounded-full shrink-0 bg-zinc-700" />
-                      <span className="text-sm truncate">{peer.name}</span>
+                      <span className="text-sm truncate">{peerLabel(peer)}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800/50 text-zinc-600 font-mono shrink-0">
                         {peer.circle}
                       </span>
