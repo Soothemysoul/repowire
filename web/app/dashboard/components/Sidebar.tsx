@@ -60,7 +60,7 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
             )}
           </div>
           <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono shrink-0">
-            {peer.circle}
+            {peer.backend && peer.backend !== "claude-code" ? peer.backend : peer.circle}
           </span>
         </button>
       </li>

@@ -58,6 +58,12 @@ export function PeerHeader({ peer, onClose }: PeerHeaderProps) {
 
         {/* Metadata chips */}
       <div className="hidden sm:flex items-center gap-3 text-xs text-zinc-500 font-mono overflow-hidden">
+        {peer.backend && (
+          <div className="flex items-center gap-1 shrink-0">
+            <span className="text-zinc-600">agent:</span>
+            <span>{peer.backend}</span>
+          </div>
+        )}
         <div className="flex items-center gap-1 shrink-0">
           <span className="text-zinc-600">circle:</span>
           <span>{peer.circle}</span>

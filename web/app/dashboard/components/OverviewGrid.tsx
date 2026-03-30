@@ -117,6 +117,11 @@ export function OverviewGrid({ peers, events, apiBase, onSelectPeer, onRefresh }
                     >
                       {peer.status}
                     </span>
+                    {peer.backend && peer.backend !== "claude-code" && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 text-zinc-500 font-mono">
+                        {peer.backend}
+                      </span>
+                    )}
                   </div>
                   {peer.description && (
                     <p className="text-xs text-zinc-500 mb-1 truncate">{peer.description}</p>
