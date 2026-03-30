@@ -205,6 +205,17 @@ Four supported runtimes, all use the same hooks + MCP pattern:
 
 `repowire setup` auto-detects installed CLIs. Backend shows in `list_peers` TSV and peer context injection.
 
+## Known Gotchas
+
+### Pane registration is not evicted on session restart
+When a new Claude session starts in the same tmux pane as a dead session, the flock releases and the new session registers correctly. But `allocate_and_register` doesn't evict the old peer's pane_id — both old and new peers end up with the same `pane_id` in `_peers`. `get_peer_by_pane` returns the first inserted (old) peer. Impact: `update_status` by pane updates the wrong peer; stale peer lingers until `lazy_repair` evicts it. Fix: evict peers with the same `pane_id` inside `allocate_and_register`.
+
+### stop_handler derives peer name from session_id, not pane registration
+`stop_handler.py` uses `derive_display_name(payload.session_id, cwd)` — always `session_id[:8]`. This is correct as long as the session that fires the stop hook matches the registered peer. It breaks silently when pane registration drifts (stale ws-hook, session restart). Don't attempt to fix this with a pane lookup in the stop hook without also fixing pane eviction — the stale pane entry will cause the lookup to return the wrong peer.
+
+### Hook handlers bypass the tmux transport abstraction
+`session_handler.py`, `stop_handler.py`, and `websocket_hook.py` use tmux primitives directly (`TMUX_PANE`, flock files, `tmux send-keys`). There is no abstraction layer. Non-tmux injection (VS Code terminal, iTerm2) is not supported without changing these files.
+
 ## Testing Notes
 
 - Route tests: `httpx.AsyncClient` + `ASGITransport`, manually init deps
