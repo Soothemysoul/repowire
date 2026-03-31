@@ -369,25 +369,44 @@ class PeerRegistry:
         metadata: dict | None = None,
         machine: str = "unknown",
         role: PeerRole = PeerRole.AGENT,
+        peer_id: str | None = None,
     ) -> tuple[str, str]:
         """Allocate a peer_id and register the peer atomically.
 
         Returns (peer_id, assigned_display_name). The daemon builds the
         display_name from path + backend, auto-suffixing on collision and
         pruning offline peers for clean name takeover.
+
+        If ``peer_id`` is provided and matches an existing peer, the peer is
+        taken over in-place (WebSocket reconnect after HTTP pre-registration).
         """
         async with self._lock:
-            # Daemon owns the name: build it from path + backend
+            # Reconnect: if caller provides a peer_id that exists, take over
+            if peer_id and peer_id in self._peers:
+                existing = self._peers[peer_id]
+                existing.status = PeerStatus.ONLINE
+                existing.last_seen = datetime.now(timezone.utc)
+                if pane_id:
+                    self._release_pane(pane_id, peer_id)
+                    existing.pane_id = pane_id
+                if tmux_session:
+                    existing.tmux_session = tmux_session
+                if machine != "unknown":
+                    existing.machine = machine
+                logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
+                return peer_id, existing.display_name
+
+            # Fresh registration: daemon owns the name
             assigned_name = self._build_display_name(path or "", circle, backend)
-            peer_id = self._find_or_allocate_mapping(
+            allocated_id = self._find_or_allocate_mapping(
                 assigned_name, circle, backend, path, role=role,
             )
             if pane_id:
-                self._release_pane(pane_id, peer_id)
+                self._release_pane(pane_id, allocated_id)
 
             # --- create and insert Peer ---
             peer = Peer(
-                peer_id=peer_id,
+                peer_id=allocated_id,
                 display_name=assigned_name,
                 circle=circle,
                 backend=backend,
@@ -400,10 +419,10 @@ class PeerRegistry:
                 machine=machine,
                 metadata=metadata or {},
             )
-            self._peers[peer_id] = peer
-            logger.info(f"Peer registered: {assigned_name} ({peer_id})")
+            self._peers[allocated_id] = peer
+            logger.info(f"Peer registered: {assigned_name} ({allocated_id})")
 
-            return peer_id, assigned_name
+            return allocated_id, assigned_name
 
     # ------------------------------------------------------------------
     # register_peer (backward-compat for tests that build Peer objects)

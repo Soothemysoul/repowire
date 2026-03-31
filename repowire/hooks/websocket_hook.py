@@ -267,6 +267,9 @@ async def main() -> int:
                     "path": path,
                     "pane_id": pane_id,
                 }
+                peer_id = os.environ.get("REPOWIRE_PEER_ID")
+                if peer_id:
+                    connect_msg["peer_id"] = peer_id
                 auth_token = os.environ.get("REPOWIRE_AUTH_TOKEN")
                 if auth_token:
                     connect_msg["auth_token"] = auth_token

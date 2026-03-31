@@ -17,8 +17,8 @@ from repowire.hooks.utils import daemon_get, daemon_post, get_pane_file
 
 def _register_peer_http(
     path: str, circle: str, backend: AgentType, metadata: dict | None = None
-) -> str | None:
-    """Register peer via HTTP POST /peers. Returns daemon-assigned display_name."""
+) -> tuple[str | None, str | None]:
+    """Register peer via HTTP POST /peers. Returns (peer_id, display_name)."""
     folder = Path(path).name
     payload: dict = {
         "name": folder,
@@ -30,8 +30,8 @@ def _register_peer_http(
         payload["metadata"] = metadata
     result = daemon_post("/peers", payload)
     if result:
-        return result.get("display_name")
-    return None
+        return result.get("peer_id"), result.get("display_name")
+    return None, None
 
 
 def get_peer_name(cwd: str) -> str:
@@ -145,10 +145,10 @@ def main(backend: str = "claude-code") -> int:
             lock_fd.close()
             return 0  # ws-hook alive → ephemeral sub-session, skip entirely
 
-        # Register peer via HTTP -- daemon assigns the display_name.
+        # Register peer via HTTP -- daemon assigns peer_id and display_name.
         circle = tmux_info["session_name"] or "default"
         metadata = {"project": folder_name}
-        display_name = _register_peer_http(cwd, circle, backend_type, metadata=metadata)
+        peer_id, display_name = _register_peer_http(cwd, circle, backend_type, metadata=metadata)
         if not display_name:
             display_name = folder_name  # fallback if daemon unreachable
 
@@ -162,6 +162,8 @@ def main(backend: str = "claude-code") -> int:
                 try:
                     env = os.environ.copy()
                     env["REPOWIRE_DISPLAY_NAME"] = display_name
+                    if peer_id:
+                        env["REPOWIRE_PEER_ID"] = peer_id
                     env["REPOWIRE_BACKEND"] = backend  # Pass backend to websocket hook
                     pid_path = CACHE_DIR / "logs" / f"ws-hook-{pane_file}.pid"
                     proc = subprocess.Popen(
