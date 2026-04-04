@@ -58,6 +58,9 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
     try {
       let msg = text.trim();
 
+      // Hint so the agent knows dashboard sees responses automatically
+      const hint = "\n(from @dashboard - reply naturally, dashboard sees your response automatically)";
+
       // Upload attachment if present
       if (file) {
         const path = await uploadFile(file);
@@ -72,7 +75,7 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
         const res = await fetch(`${apiBase}/notify`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ from_peer: "dashboard", to_peer: peer.name, text: msg, bypass_circle: true }),
+          body: JSON.stringify({ from_peer: "dashboard", to_peer: peer.name, text: msg + hint, bypass_circle: true }),
         });
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
@@ -86,7 +89,7 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
         const res = await fetch(`${apiBase}/query`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ from_peer: "dashboard", to_peer: peer.name, text: msg, bypass_circle: true }),
+          body: JSON.stringify({ from_peer: "dashboard", to_peer: peer.name, text: msg + hint, bypass_circle: true }),
         });
         const data = await res.json();
         if (data.error) {

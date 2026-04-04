@@ -200,7 +200,8 @@ def create_mcp_server() -> FastMCP:
         """[Repowire mesh] Send a fire-and-forget notification to a peer in another project.
 
         Use for status updates, announcements, or replying to notifications.
-        Special peers: 'telegram' sends to user's phone, 'dashboard' shows in web UI.
+        Special peers: 'telegram' sends to user's phone.
+        The dashboard sees your responses automatically via chat turns - no need to notify it.
 
         Do NOT use SendMessage to reach repowire peers. SendMessage is a Claude
         Code harness tool for same-session teammates only.
