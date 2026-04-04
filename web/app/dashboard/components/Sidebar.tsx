@@ -45,6 +45,8 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
       <li key={peer.peer_id}>
         <button
           onClick={() => onSelectPeer(peer)}
+          aria-label={`Select peer ${peerLabel(peer)} (${peer.status})`}
+          aria-pressed={isSelected}
           className={cn(
             "w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-left transition-colors",
             isSelected
@@ -52,7 +54,10 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
               : "hover:bg-zinc-900 text-zinc-400"
           )}
         >
-          <span className={cn("w-2 h-2 rounded-full shrink-0", statusDot(peer.status))} />
+          <span
+            className={cn("w-2 h-2 rounded-full shrink-0", statusDot(peer.status))}
+            aria-hidden="true"
+          />
           <div className="flex flex-col min-w-0 flex-1">
             <span className="text-sm font-medium truncate">{peerLabel(peer)}</span>
             {peer.description && (
@@ -89,6 +94,8 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
         <div className="border-t border-zinc-800/50">
           <button
             onClick={() => setOfflineExpanded(!offlineExpanded)}
+            aria-expanded={offlineExpanded}
+            aria-controls="offline-peers-list"
             className="w-full flex items-center gap-2 px-3 py-2 text-left hover:bg-zinc-900/50 transition-colors"
           >
             <ChevronRight
@@ -103,13 +110,15 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
           </button>
 
           {offlineExpanded && (
-            <ul className="flex flex-col gap-0.5 px-2 pb-2">
+            <ul id="offline-peers-list" className="flex flex-col gap-0.5 px-2 pb-2">
               {offline.map((peer) => {
                 const isSelected = peer.peer_id === selectedPeerId;
                 return (
                   <li key={peer.peer_id}>
                     <button
                       onClick={() => onSelectPeer(peer)}
+                      aria-label={`Select peer ${peerLabel(peer)} (offline)`}
+                      aria-pressed={isSelected}
                       className={cn(
                         "w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left transition-colors opacity-60",
                         isSelected
@@ -117,7 +126,7 @@ export function Sidebar({ peers, selectedPeerId, onSelectPeer, className }: Side
                           : "hover:bg-zinc-900 text-zinc-500"
                       )}
                     >
-                      <span className="w-2 h-2 rounded-full shrink-0 bg-zinc-700" />
+                      <span className="w-2 h-2 rounded-full shrink-0 bg-zinc-700" aria-hidden="true" />
                       <span className="text-sm truncate">{peerLabel(peer)}</span>
                       <span className="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800/50 text-zinc-600 font-mono shrink-0">
                         {peer.circle}

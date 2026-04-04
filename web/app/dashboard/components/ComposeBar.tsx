@@ -123,6 +123,8 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
               <button
                 key={m}
                 onClick={() => setMode(m)}
+                aria-label={`${m} mode`}
+                aria-pressed={mode === m}
                 className={cn(
                   "px-3 py-1 text-[9px] font-bold uppercase tracking-wider rounded transition-colors",
                   mode === m
@@ -146,8 +148,8 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
             <Paperclip className="w-3 h-3 shrink-0" />
             <span className="truncate flex-1">{file.name}</span>
             <span className="text-outline shrink-0">{(file.size / 1024).toFixed(0)}KB</span>
-            <button onClick={() => setFile(null)} className="p-0.5 hover:text-on-surface">
-              <X className="w-3 h-3" />
+            <button onClick={() => setFile(null)} aria-label="Remove attachment" className="p-0.5 hover:text-on-surface">
+              <X className="w-3 h-3" aria-hidden="true" />
             </button>
           </div>
         )}
@@ -158,8 +160,9 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
             onClick={() => fileRef.current?.click()}
             className="p-2 text-outline hover:text-on-surface-variant transition-colors shrink-0"
             title="Attach file"
+            aria-label="Attach file"
           >
-            <Paperclip className="w-4 h-4" />
+            <Paperclip className="w-4 h-4" aria-hidden="true" />
           </button>
           <input
             ref={fileRef}
@@ -180,6 +183,8 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
           <button
             onClick={submit}
             disabled={(!text.trim() && !file) || isPending}
+            aria-label={mode === "notify" ? "Send message" : "Ask peer"}
+            aria-busy={isPending}
             className={cn(
               "w-11 h-11 rounded-lg flex items-center justify-center shadow-lg active:scale-90 transition-transform shrink-0",
               (text.trim() || file)
@@ -187,7 +192,7 @@ export function ComposeBar({ peer, apiBase, onSent }: ComposeBarProps) {
                 : "bg-surface-container-highest text-outline"
             )}
           >
-            {isPending ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+            {isPending ? <RefreshCw className="w-4 h-4 animate-spin" aria-hidden="true" /> : <Send className="w-4 h-4" aria-hidden="true" />}
           </button>
         </div>
       </div>
