@@ -18,10 +18,49 @@ export function timeAgo(dateStr?: string | null): string | null {
 
 export function statusDot(status: "online" | "busy" | "offline"): string {
   return status === "online"
-    ? "bg-emerald-500"
+    ? "bg-secondary pulse-online"
     : status === "busy"
-    ? "bg-amber-500"
-    : "bg-zinc-600";
+    ? "bg-tertiary-fixed-dim glow-busy"
+    : "bg-outline";
+}
+
+export function statusBorderColor(status: "online" | "busy" | "offline"): string {
+  return status === "online"
+    ? "border-secondary/20"
+    : status === "busy"
+    ? "border-tertiary-fixed-dim/20"
+    : "border-outline-variant/20";
+}
+
+export function statusTopStrip(status: "online" | "busy" | "offline"): string {
+  return status === "online"
+    ? "bg-secondary"
+    : status === "busy"
+    ? "bg-tertiary-fixed-dim"
+    : "bg-outline-variant";
+}
+
+export function statusTextColor(status: "online" | "busy" | "offline"): string {
+  return status === "online"
+    ? "text-secondary"
+    : status === "busy"
+    ? "text-tertiary-fixed-dim"
+    : "text-outline";
+}
+
+export function roleBadgeClass(role?: string): string | null {
+  switch (role) {
+    case "service": return "bg-primary/10 text-primary";
+    case "orchestrator": return "bg-tertiary-fixed-dim/10 text-tertiary-fixed-dim";
+    case "human": return "bg-secondary/10 text-secondary";
+    default: return null;
+  }
+}
+
+export function backendIcon(backend?: string): string {
+  if (backend?.includes("telegram")) return "send";
+  if (backend?.includes("slack")) return "forum";
+  return "smart_toy";
 }
 
 /** Format path with folder name prominent: "myproject" or "…/parent/myproject" */

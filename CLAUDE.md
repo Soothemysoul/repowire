@@ -164,6 +164,10 @@ Hosted at repowire.io. Daemon connects outbound via WSS. Cookie-based auth for d
 - File uploads: 📎 button in compose bar, uploads to `POST /attachments`, path included in notification
 - Build: `repowire build-ui` or `cd web && npm run dev`
 
+### Dashboard Design System
+
+See [`docs/design-system.md`](docs/design-system.md) for the full spec (color tokens, Tailwind config, responsive layout, component patterns).
+
 ## Attachments
 
 - `daemon/routes/attachments.py` — `POST /attachments` (upload, 10MB limit) + `GET /attachments/{id}` (download)
