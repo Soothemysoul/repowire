@@ -1,6 +1,8 @@
 """Tests for the session hook handler."""
 
 import json
+import signal
+from pathlib import Path
 from unittest.mock import patch
 
 from repowire.hooks.session_handler import (
@@ -83,11 +85,22 @@ class TestSessionMain:
         assert result == 0
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
-    @patch("repowire.hooks.session_handler._register_peer_http", return_value=("repow-default-abc12345", "test-claude-code"))
-    @patch("repowire.hooks.session_handler.get_tmux_info",
-           return_value={"pane_id": "%1", "session_name": "default", "window_name": "test"})
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code"),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
     @patch("repowire.hooks.session_handler.subprocess.Popen")
-    def test_session_start_registers(self, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path):
+    def test_session_start_registers(
+        self, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
         with patch("repowire.hooks.session_handler.CACHE_DIR", tmp_path):
             result = _run_with_input({
                 "hook_event_name": "SessionStart",
@@ -101,12 +114,28 @@ class TestSessionMain:
             assert call_args[0][0] == str(tmp_path)
 
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
-    @patch("repowire.hooks.session_handler._register_peer_http", return_value=("repow-default-abc12345", "test-claude-code"))
-    @patch("repowire.hooks.session_handler.get_tmux_info",
-           return_value={"pane_id": "%1", "session_name": "default", "window_name": "test"})
-    def test_second_session_start_skips_ws_hook(self, mock_tmux, mock_register, mock_fetch, tmp_path):
-        """Second SessionStart for same pane skips ws-hook spawn (flock dedup)."""
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "test-claude-code"),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    def test_second_session_start_skips_ws_hook(
+        self, mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        """Second SessionStart for same pane + same cwd skips ws-hook spawn (flock dedup)."""
         with patch("repowire.hooks.session_handler.CACHE_DIR", tmp_path):
+            # Write cwd file so the cwd check sees a match
+            log_dir = tmp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / "ws-hook-1.cwd").write_text(str(tmp_path))
+
             # Simulate a held flock — fcntl.flock raises OSError when lock is held
             with patch("repowire.hooks.session_handler.fcntl") as mock_fcntl:
                 mock_fcntl.LOCK_EX = 2
@@ -119,6 +148,54 @@ class TestSessionMain:
                     "session_id": "eph99999-rest",
                 })
 
-                # Should return 0 immediately — ws-hook alive, skip entirely
+                # Should return 0 immediately — ws-hook alive, same project
                 assert result == 0
                 mock_register.assert_not_called()
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-default-abc12345", "newproj-claude-code"),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%1",
+            "session_name": "default",
+            "window_name": "test",
+        },
+    )
+    def test_cwd_mismatch_kills_old_ws_hook(
+        self, mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        """Different cwd in same pane kills old ws-hook and re-registers."""
+        with patch("repowire.hooks.session_handler.CACHE_DIR", tmp_path):
+            log_dir = tmp_path / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            (log_dir / "ws-hook-1.cwd").write_text("/old/project")
+            (log_dir / "ws-hook-1.pid").write_text("99999")
+
+            new_cwd = str(tmp_path / "newproj")
+            Path(new_cwd).mkdir()
+
+            with patch("repowire.hooks.session_handler.fcntl") as mock_fcntl, \
+                 patch("repowire.hooks.session_handler.os.kill") as mock_kill, \
+                 patch("repowire.hooks.session_handler.subprocess.Popen") as mock_popen:
+                mock_fcntl.LOCK_EX = 2
+                mock_fcntl.LOCK_NB = 4
+                # First call (LOCK_NB) fails, second call (blocking) succeeds
+                mock_fcntl.flock.side_effect = [
+                    OSError("Resource temporarily unavailable"),
+                    None,
+                ]
+                mock_popen.return_value.pid = 12345
+
+                result = _run_with_input({
+                    "hook_event_name": "SessionStart",
+                    "cwd": new_cwd,
+                    "session_id": "new-session",
+                })
+
+                assert result == 0
+                mock_kill.assert_called_once_with(99999, signal.SIGTERM)
+                mock_register.assert_called_once()

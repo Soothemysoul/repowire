@@ -6,8 +6,10 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from repowire.config.models import CACHE_DIR, AgentType
@@ -133,17 +135,48 @@ def main(backend: str = "claude-code") -> int:
 
     if event == "SessionStart":
         # Ephemeral tool sub-sessions (Haiku-proxied) fire SessionStart too.
-        # Skip entirely if a ws-hook is already running for this pane.
+        # Skip entirely if a ws-hook is already running for this pane
+        # AND the working directory hasn't changed (same project).
         # Uses flock instead of PID probe to avoid TOCTOU races.
         pane_file = get_pane_file(pane_id)
-        lock_path = CACHE_DIR / "logs" / f"ws-hook-{pane_file}.lock"
-        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        log_dir = CACHE_DIR / "logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = log_dir / f"ws-hook-{pane_file}.lock"
+        pid_path = log_dir / f"ws-hook-{pane_file}.pid"
+        cwd_path = log_dir / f"ws-hook-{pane_file}.cwd"
         lock_fd = open(lock_path, "w")  # noqa: SIM115
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            lock_fd.close()
-            return 0  # ws-hook alive → ephemeral sub-session, skip entirely
+            # ws-hook alive -- check if it's the same project or a stale session
+            try:
+                old_cwd = cwd_path.read_text().strip()
+            except OSError:
+                old_cwd = ""
+            if old_cwd == cwd:
+                lock_fd.close()
+                return 0  # genuine sub-session, same project
+            # Different cwd -- new session in same pane, kill old ws-hook
+            try:
+                old_pid = int(pid_path.read_text().strip())
+                os.kill(old_pid, signal.SIGTERM)
+            except (OSError, ValueError):
+                pass  # already dead or pid file missing
+            # Re-acquire flock with timeout (SIGTERM may take a moment)
+            for _ in range(10):
+                try:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except OSError:
+                    time.sleep(0.5)
+            else:
+                # Old process didn't release lock, force kill
+                try:
+                    old_pid = int(pid_path.read_text().strip())
+                    os.kill(old_pid, signal.SIGKILL)
+                except (OSError, ValueError):
+                    pass
+                fcntl.flock(lock_fd, fcntl.LOCK_EX)
 
         # Register peer via HTTP -- daemon assigns peer_id and display_name.
         circle = tmux_info["session_name"] or "default"
@@ -156,16 +189,13 @@ def main(backend: str = "claude-code") -> int:
         try:
             hook_script = Path(__file__).parent / "websocket_hook.py"
             if hook_script.exists():
-                log_dir = CACHE_DIR / "logs"
-                log_dir.mkdir(parents=True, exist_ok=True)
                 log_file = open(log_dir / f"ws-hook-{pane_file}.log", "w")  # noqa: SIM115
                 try:
                     env = os.environ.copy()
                     env["REPOWIRE_DISPLAY_NAME"] = display_name
                     if peer_id:
                         env["REPOWIRE_PEER_ID"] = peer_id
-                    env["REPOWIRE_BACKEND"] = backend  # Pass backend to websocket hook
-                    pid_path = CACHE_DIR / "logs" / f"ws-hook-{pane_file}.pid"
+                    env["REPOWIRE_BACKEND"] = backend
                     proc = subprocess.Popen(
                         [sys.executable, str(hook_script)],
                         stdout=log_file,
@@ -176,6 +206,7 @@ def main(backend: str = "claude-code") -> int:
                         pass_fds=(lock_fd.fileno(),),
                     )
                     pid_path.write_text(str(proc.pid))
+                    cwd_path.write_text(cwd)
                 finally:
                     log_file.close()
                     lock_fd.close()  # child inherits flock; parent releases fd
