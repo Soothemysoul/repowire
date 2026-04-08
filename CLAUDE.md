@@ -209,6 +209,20 @@ Four supported runtimes, all use the same hooks + MCP pattern:
 
 `repowire setup` auto-detects installed CLIs. Backend shows in `list_peers` TSV and peer context injection.
 
+## Memory
+
+Memory is stored in-repo at `.claude/memory/` (committed, shared across contributors).
+
+**Sanitization rules — memory here is public:**
+- Never store secrets, tokens, API keys, passwords, or auth credentials
+- Never store absolute or home-relative paths — only paths relative to the repowire repo root (e.g. `repowire/daemon/app.py`, not `~/git/repowire/...` or `/Users/.../`)
+- Never store IP addresses, internal hostnames, or private URLs
+- Never store personal identifiers (emails, chat IDs, user IDs)
+- Strip environment-specific details — keep memory portable across machines
+- When in doubt, omit it. The memory should be safe to push to a public repo.
+
+Use `.claude/memory/MEMORY.md` as the index. One file per memory, frontmatter format per the auto-memory system.
+
 ## Testing Notes
 
 - Route tests: `httpx.AsyncClient` + `ASGITransport`, manually init deps
