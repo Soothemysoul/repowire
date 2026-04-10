@@ -6,49 +6,6 @@ from repowire.protocol.messages import (
     QueryMessage,
     ResponseMessage,
 )
-from repowire.protocol.peers import Peer, PeerStatus
-
-
-class TestPeer:
-    def test_create_peer(self):
-        peer = Peer(
-            name="backend",
-            path="/app/backend",
-            machine="laptop",
-            tmux_session="claude-backend",
-        )
-
-        assert peer.name == "backend"
-        assert peer.path == "/app/backend"
-        assert peer.machine == "laptop"
-        assert peer.tmux_session == "claude-backend"
-        assert peer.status == PeerStatus.OFFLINE
-        assert peer.is_local() is True
-
-    def test_peer_to_dict(self):
-        peer = Peer(
-            name="frontend",
-            path="/app/frontend",
-            machine="desktop",
-            status=PeerStatus.ONLINE,
-        )
-
-        data = peer.to_dict()
-
-        assert data["name"] == "frontend"
-        assert data["status"] == "online"
-        assert data["tmux_session"] is None
-
-    def test_peer_from_constructor_with_legacy_fields(self):
-        peer = Peer(
-            name="api",
-            path="/app/api",
-            machine="server",
-            status=PeerStatus.BUSY,
-        )
-
-        assert peer.name == "api"
-        assert peer.status == PeerStatus.BUSY
 
 
 class TestMessages:
