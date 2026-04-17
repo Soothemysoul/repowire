@@ -242,7 +242,14 @@ class PeerRegistry:
         if len(matches) == 1:
             return matches[0]
         active = [p for p in matches if p.status != PeerStatus.OFFLINE]
-        return active[0] if active else matches[0]
+        candidates = active or matches
+
+        def preference(peer: Peer) -> tuple[bool, bool, float]:
+            connected = bool(self._transport and self._transport.is_connected(peer.peer_id))
+            last_seen = peer.last_seen.timestamp() if peer.last_seen else 0.0
+            return connected, bool(peer.pane_id), last_seen
+
+        return max(candidates, key=preference)
 
     @staticmethod
     def _sanitize_folder_name(name: str) -> str:
@@ -502,6 +509,11 @@ class PeerRegistry:
                 if peer.pane_id == pane_id:
                     return peer
             return None
+
+    async def get_peers_by_circle(self, circle: str) -> list[Peer]:
+        """Get all peers in a given circle."""
+        async with self._lock:
+            return [p for p in self._peers.values() if p.circle == circle]
 
     async def get_all_peers(self) -> list[Peer]:
         """Get all registered peers."""
@@ -916,13 +928,14 @@ class PeerRegistry:
         return pruned_count
 
     # ------------------------------------------------------------------
-    # Liveness repair
+    # Maintenance
     # ------------------------------------------------------------------
 
     async def lazy_repair(self) -> None:
-        """Debounced liveness sweep: ping ONLINE/BUSY peers, mark dead ones OFFLINE.
+        """Debounced maintenance: demote ghosts, evict stale, persist.
 
-        Max 1x per 30s. Triggered by MCP-facing endpoints.
+        Max 1x per 30s. Called from message/peer endpoints. Lifecycle hooks
+        and WebSocket disconnect handle liveness — this catches stragglers.
         """
         if time.monotonic() - self._last_repair < 30.0:
             return
@@ -930,12 +943,104 @@ class PeerRegistry:
             if time.monotonic() - self._last_repair < 30.0:
                 return
             self._last_repair = time.monotonic()
+            await self._demote_disconnected_peers()
+            await self._demote_unsafe_connected_peers()
+            await self._evict_stale_peers()
+            self._save_events()
+            self._persist_mappings()
+
+    async def _demote_disconnected_peers(self) -> int:
+        """Mark ONLINE/BUSY peers without a WebSocket connection as OFFLINE.
+
+        Catches ghost peers that registered via HTTP but whose ws-hook
+        never connected (e.g. pane died before ws-hook could start).
+        """
+        if not self._transport:
+            return 0
+        async with self._lock:
+            ghosts = [
+                p for p in self._peers.values()
+                if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and not self._transport.is_connected(p.peer_id)
+            ]
+        count = 0
+        for peer in ghosts:
+            await self.mark_offline(peer.peer_id)
+            count += 1
+        if count:
+            logger.info("demoted %d ghost peers (no WebSocket)", count)
+        return count
+
+    async def _demote_unsafe_connected_peers(self) -> int:
+        """Mark connected tmux peers OFFLINE if their pane is no longer safe."""
+        transport = self._transport
+        if not transport:
+            return 0
+
+        async with self._lock:
+            targets = [
+                p.peer_id for p in self._peers.values()
+                if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and p.pane_id
+                and p.backend != AgentType.OPENCODE
+                and transport.is_connected(p.peer_id)
+            ]
+
+        async def check(peer_id: str) -> tuple[str, bool]:
+            try:
+                pong = await transport.ping(peer_id, timeout=1.0)
+                return peer_id, bool(pong.get("pane_alive", True))
+            except Exception:
+                return peer_id, False
+
+        results = await asyncio.gather(*(check(peer_id) for peer_id in targets))
+        count = 0
+        for peer_id, pane_alive in results:
+            if pane_alive:
+                continue
+            await self.mark_offline(peer_id)
+            await transport.disconnect(peer_id)
+            count += 1
+
+        if count:
+            logger.info("demoted %d unsafe connected peers", count)
+        return count
+
+    async def _evict_stale_peers(self) -> int:
+        """Evict long-offline peers from both _peers and _mappings.
+
+        Returns number of evicted peers.
+        """
+        max_age = self._config.daemon.prune_max_age_hours * 3600
+        now = time.time()
+        async with self._lock:
+            stale = [
+                pid for pid, p in self._peers.items()
+                if p.status == PeerStatus.OFFLINE
+                and p.last_seen
+                and (now - p.last_seen.timestamp()) > max_age
+            ]
+            for pid in stale:
+                del self._peers[pid]
+                self._mappings.pop(pid, None)
+            if stale:
+                self._mappings_dirty = True
+                logger.info("evicted %d stale offline peers", len(stale))
+        return len(stale)
+
+    async def active_repair(self) -> None:
+        """Full liveness sweep: ping ONLINE/BUSY peers, mark dead ones OFFLINE.
+
+        Unlike lazy_repair, this actively probes peers. Use for diagnostics
+        or when lifecycle hooks are not available.
+        """
+        async with self._repair_lock:
             await self._do_repair()
             self._save_events()
             self._persist_mappings()
 
     async def _do_repair(self) -> None:
-        """Actual repair logic. Must hold _repair_lock."""
+        """Ping/pong liveness check. Must hold _repair_lock."""
         transport = self._transport
         if not transport:
             return
@@ -970,33 +1075,20 @@ class PeerRegistry:
         alive_peers = [r for r in results if isinstance(r, tuple)]
         dead_peer_ids = {t[0] for t in targets} - {r[0] for r in alive_peers}
 
-        # Circle recovery: update peers whose tmux session moved
-        current_circles = {pid: c for pid, _, c in targets}
+        targets_map = {pid: c for pid, _, c in targets}
         for peer_id, new_circle in alive_peers:
-            current = current_circles.get(peer_id)
+            current = targets_map.get(peer_id)
             if current and new_circle and new_circle != current:
-                logger.info(f"lazy_repair: circle recovery {peer_id}: {current} → {new_circle}")
+                logger.info(
+                    "active_repair: circle recovery %s: %s → %s",
+                    peer_id, current, new_circle,
+                )
                 await self.set_peer_circle(peer_id, new_circle)
 
         for peer_id in dead_peer_ids:
-            logger.info(f"lazy_repair: marking {peer_id} OFFLINE (no pong)")
+            logger.info("active_repair: marking %s OFFLINE (no pong)", peer_id)
             await self.update_peer_status(peer_id, PeerStatus.OFFLINE)
             if self._query_tracker:
                 await self._query_tracker.cancel_queries_to_peer(peer_id)
 
-        # Evict long-offline peers from BOTH _peers and _mappings
-        max_age = self._config.daemon.prune_max_age_hours * 3600
-        now = time.time()
-        async with self._lock:
-            stale = [
-                pid for pid, p in self._peers.items()
-                if p.status == PeerStatus.OFFLINE
-                and p.last_seen
-                and (now - p.last_seen.timestamp()) > max_age
-            ]
-            for pid in stale:
-                del self._peers[pid]
-                self._mappings.pop(pid, None)
-            if stale:
-                self._mappings_dirty = True
-                logger.info(f"lazy_repair: evicted {len(stale)} stale offline peers")
+        await self._evict_stale_peers()
