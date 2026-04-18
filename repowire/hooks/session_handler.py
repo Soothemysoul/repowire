@@ -37,7 +37,7 @@ def _register_peer_http(
     metadata: dict | None = None,
 ) -> tuple[str | None, str | None]:
     """Register peer via HTTP POST /peers. Returns (peer_id, display_name)."""
-    folder = Path(path).name
+    folder = os.environ.get("REPOWIRE_DISPLAY_NAME") or Path(path).name
     payload: dict = {
         "name": folder,
         "path": path,
@@ -219,7 +219,7 @@ def main(backend: str = "claude-code") -> int:
         clear_pane_runtime_state(pane_id)
 
         # Register peer via HTTP -- daemon assigns peer_id and display_name.
-        circle = tmux_info["session_name"] or "default"
+        circle = os.environ.get("REPOWIRE_CIRCLE") or tmux_info["session_name"] or "default"
         metadata = {"project": folder_name}
         peer_id, display_name = _register_peer_http(
             cwd,
