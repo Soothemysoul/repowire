@@ -173,8 +173,8 @@ def create_mcp_server() -> FastMCP:
         By default shows only online/busy peers. Set show_offline=True to include
         offline peers.
 
-        Returns TSV: peer_id, name, project, circle, status, path, machine, description, backend.
-        These are cross-project peers reachable via ask_peer/notify_peer. Do NOT
+        Returns TSV: peer_id, name, project, circle, role, status, path, machine,
+        description, backend. Peers are reachable via ask_peer/notify_peer. Do NOT
         use SendMessage to contact them -- SendMessage is a Claude Code harness
         tool for same-session teammates only.
         """

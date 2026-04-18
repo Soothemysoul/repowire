@@ -90,7 +90,7 @@ class UnregisterPeerRequest(BaseModel):
 
 @router.get("/peers", response_model=PeersResponse)
 async def list_peers(
-    status: str | None = Query(None, description="Filter by status (online, offline)"),
+    status: str | None = Query(None, description="Filter by status", enum=["online", "offline"]),
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
     """Get list of all registered peers, optionally filtered by status."""
