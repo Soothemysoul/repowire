@@ -21,4 +21,6 @@ session-logs.md
 
 # Dashboard build output (run 'repowire build-ui' before 'uv build')
 web/out/
+# Include prebuilt artefacts so `uv tool install git+...` works without local build step
+!web/out/
 .coverage
