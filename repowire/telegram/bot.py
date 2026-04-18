@@ -47,6 +47,20 @@ def _ws_url(http_url: str) -> str:
     return urlunparse(p._replace(scheme="wss" if p.scheme == "https" else "ws"))
 
 
+def _resolve_whisper_config() -> tuple[str, str, str] | None:
+    """Read REPOWIRE_WHISPER_{CLI,MODEL,LANG} from env.
+
+    Returns (cli_path, model_path, lang) when both required vars are set,
+    or None when either is missing. Lang defaults to 'ru'.
+    """
+    cli = os.environ.get("REPOWIRE_WHISPER_CLI")
+    model = os.environ.get("REPOWIRE_WHISPER_MODEL")
+    if not cli or not model:
+        return None
+    lang = os.environ.get("REPOWIRE_WHISPER_LANG", "ru")
+    return cli, model, lang
+
+
 class TelegramPeer:
     """Telegram bot that registers as a repowire peer."""
 
