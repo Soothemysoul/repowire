@@ -457,7 +457,10 @@ class TelegramPeer:
 
     async def _cmd_peers(self) -> None:
         try:
-            r = await self._http.get(f"{self._daemon_url}/peers")
+            r = await self._http.get(
+                f"{self._daemon_url}/peers",
+                params={"circle": self._circle},
+            )
             peers = r.json().get("peers", [])
             active = [p for p in peers if p.get("status") in ("online", "busy")]
 
