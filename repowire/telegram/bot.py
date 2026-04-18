@@ -14,6 +14,8 @@ import json
 import logging
 import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -188,6 +190,19 @@ class TelegramPeer:
         if chat_id != self._chat_id:
             return
 
+        # Voice
+        voice = m.get("voice")
+        if voice:
+            await self._on_voice(voice, message_id=m.get("message_id"))
+            return
+
+        # Document (file attachment)
+        doc = m.get("document")
+        if doc:
+            caption = m.get("caption", "").strip()
+            await self._on_document(doc, caption, message_id=m.get("message_id"))
+            return
+
         # Photo
         photos = m.get("photo", [])
         if photos:
@@ -305,6 +320,138 @@ class TelegramPeer:
             await self._notify(self._reply_target, msg, message_id=message_id)
         except Exception as e:
             await self._tg_send(f"Error: {_esc(str(e))}")
+
+    async def _on_voice(self, voice: dict, message_id: int | None = None) -> None:
+        """Handle incoming Telegram voice message — download, transcribe, forward."""
+        if not self._reply_target:
+            await self._tg_send(
+                "Select a peer first with /select or /peers, then send the voice\\."
+            )
+            return
+
+        cfg = _resolve_whisper_config()
+        if cfg is None:
+            await self._tg_send(
+                "Voice disabled: set `REPOWIRE_WHISPER_CLI` and "
+                "`REPOWIRE_WHISPER_MODEL` in the service environment\\."
+            )
+            return
+        whisper_cli, whisper_model, whisper_lang = cfg
+
+        try:
+            file_id = voice.get("file_id", "")
+            r = await self._http.get(
+                f"{self._bot_path}/getFile",
+                params={"file_id": file_id},
+            )
+            file_path = r.json().get("result", {}).get("file_path", "")
+            if not file_path:
+                await self._tg_send("Failed to get voice file from Telegram\\.")
+                return
+
+            async with httpx.AsyncClient() as dl:
+                token = self._bot_path.removeprefix("/bot")
+                voice_r = await dl.get(
+                    f"https://api.telegram.org/file/bot{token}/{file_path}",
+                    timeout=30.0,
+                )
+
+            with tempfile.NamedTemporaryFile(suffix=".oga", delete=False) as oga:
+                oga.write(voice_r.content)
+                oga_path = oga.name
+
+            wav_path = oga_path.replace(".oga", ".wav")
+            try:
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    ["ffmpeg", "-y", "-i", oga_path, "-ar", "16000", "-ac", "1",
+                     "-c:a", "pcm_s16le", wav_path],
+                    capture_output=True, timeout=30,
+                )
+                if proc.returncode != 0:
+                    await self._tg_send("Failed to convert voice file\\.")
+                    return
+
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    [whisper_cli, "-m", whisper_model, "-f", wav_path,
+                     "-l", whisper_lang, "--no-timestamps", "-nt"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                lines = [
+                    line for line in proc.stdout.splitlines()
+                    if line.strip()
+                    and not line.startswith("whisper_")
+                    and not line.startswith("system_info")
+                    and not line.startswith("main:")
+                ]
+                transcript = "\n".join(lines).strip()
+
+                if not transcript:
+                    await self._tg_send("Could not transcribe voice message\\.")
+                    return
+
+                msg = f"[voice] {transcript}"
+                await self._notify(self._reply_target, msg, message_id=message_id)
+            finally:
+                for p in (oga_path, wav_path):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+        except Exception as e:
+            logger.warning("Voice handling failed", exc_info=True)
+            await self._tg_send(f"Voice error: {_esc(str(e))}")
+
+    async def _on_document(self, doc: dict, caption: str, message_id: int | None = None) -> None:
+        """Handle incoming Telegram document — upload to daemon, notify peer."""
+        if not self._reply_target:
+            await self._tg_send(
+                "Select a peer first with /select or /peers, then send the file\\."
+            )
+            return
+
+        try:
+            file_id = doc.get("file_id", "")
+            file_name = doc.get("file_name", "document")
+            mime_type = doc.get("mime_type", "application/octet-stream")
+
+            r = await self._http.get(
+                f"{self._bot_path}/getFile",
+                params={"file_id": file_id},
+            )
+            file_path = r.json().get("result", {}).get("file_path", "")
+            if not file_path:
+                await self._tg_send("Failed to get file from Telegram\\.")
+                return
+
+            async with httpx.AsyncClient() as dl:
+                token = self._bot_path.removeprefix("/bot")
+                file_r = await dl.get(
+                    f"https://api.telegram.org/file/bot{token}/{file_path}",
+                    timeout=30.0,
+                )
+
+            async with httpx.AsyncClient() as ul:
+                upload_r = await ul.post(
+                    f"{self._daemon_url}/attachments",
+                    files={"file": (file_name, file_r.content, mime_type)},
+                    timeout=30.0,
+                )
+
+            if upload_r.status_code != 200:
+                await self._tg_send("Failed to upload file\\.")
+                return
+
+            att = upload_r.json()
+            msg = caption or f"File: {file_name}"
+            msg += f"\n[Attachment: {att['path']}]"
+
+            await self._notify(self._reply_target, msg, message_id=message_id)
+        except Exception as e:
+            logger.warning("Document handling failed", exc_info=True)
+            await self._tg_send(f"File error: {_esc(str(e))}")
 
     # -- Commands --
 
