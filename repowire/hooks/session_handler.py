@@ -48,6 +48,9 @@ def _register_peer_http(
         payload["pane_id"] = pane_id
     if metadata:
         payload["metadata"] = metadata
+    peer_role = os.environ.get("REPOWIRE_PEER_ROLE")
+    if peer_role:
+        payload["role"] = peer_role
     result = daemon_post("/peers", payload)
     if result:
         return result.get("peer_id"), result.get("display_name")
