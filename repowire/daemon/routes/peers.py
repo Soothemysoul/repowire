@@ -90,12 +90,15 @@ class UnregisterPeerRequest(BaseModel):
 
 @router.get("/peers", response_model=PeersResponse)
 async def list_peers(
+    circle: str | None = Query(None, description="Filter by circle (logical subnet)"),
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
-    """Get list of all registered peers."""
+    """Get list of all registered peers, optionally filtered by circle."""
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
     peers = await peer_registry.get_all_peers()
+    if circle is not None:
+        peers = [p for p in peers if p.circle == circle]
     return PeersResponse(peers=[_peer_to_info(p) for p in peers])
 
 
