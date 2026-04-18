@@ -98,6 +98,23 @@ class PeerRegistry:
         self._load_events()
         self._last_repair: float = 0.0
         self._repair_lock = asyncio.Lock()
+        self._spawn_ready_events: dict[str, asyncio.Event] = {}
+
+    # ------------------------------------------------------------------
+    # Spawn readiness helpers
+    # ------------------------------------------------------------------
+
+    def register_spawn_waiter(self, display_name: str) -> asyncio.Event:
+        """Register an asyncio.Event that fires when display_name goes ONLINE."""
+        event = asyncio.Event()
+        self._spawn_ready_events[display_name] = event
+        return event
+
+    def _fire_spawn_event(self, display_name: str) -> None:
+        """Signal that display_name has connected (called from WS handler)."""
+        event = self._spawn_ready_events.pop(display_name, None)
+        if event:
+            event.set()
 
     # ------------------------------------------------------------------
     # Mapping persistence

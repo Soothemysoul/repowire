@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -9,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
-from repowire.daemon.deps import get_config
+from repowire.daemon.deps import get_config, get_peer_registry
 from repowire.spawn import SpawnConfig, SpawnResult, kill_peer, spawn_peer
 
 router = APIRouter(tags=["spawn"])
@@ -48,6 +50,8 @@ class SpawnRequest(BaseModel):
     path: str = Field(..., description="Absolute path to the project directory")
     command: str = Field(..., description="Command to run — must be in allowed_commands")
     circle: str = Field(default="default", description="Circle to spawn into")
+    wait_for_ready: bool = Field(default=False, description="Block until peer is ONLINE")
+    ready_timeout_ms: int = Field(default=30000, description="Max wait in milliseconds")
 
 
 class SpawnResponse(BaseModel):
@@ -56,6 +60,8 @@ class SpawnResponse(BaseModel):
     ok: bool = True
     display_name: str
     tmux_session: str
+    elapsed_ms: int | None = None
+    status: str = "spawning"
 
 
 class KillRequest(BaseModel):
@@ -133,6 +139,9 @@ async def spawn(
     Both the command and the path must be explicitly allowed in
     daemon.spawn.allowed_commands / allowed_paths in ~/.repowire/config.yaml.
     The spawned agent self-registers via its SessionStart hook once it starts.
+
+    If wait_for_ready=True, the call blocks until the peer's WebSocket hook
+    connects (peer is ONLINE) or ready_timeout_ms elapses (HTTP 408).
     """
     _validate_spawn_request(request.path, request.command)
 
@@ -149,7 +158,32 @@ async def spawn(
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
 
     _spawned_sessions.add(result.tmux_session)
-    return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
+
+    if not request.wait_for_ready:
+        return SpawnResponse(display_name=result.display_name, tmux_session=result.tmux_session)
+
+    peer_registry = get_peer_registry()
+    event = peer_registry.register_spawn_waiter(result.display_name)
+    start = time.monotonic()
+    try:
+        await asyncio.wait_for(event.wait(), timeout=request.ready_timeout_ms / 1000)
+        elapsed_ms = int((time.monotonic() - start) * 1000)
+        return SpawnResponse(
+            display_name=result.display_name,
+            tmux_session=result.tmux_session,
+            elapsed_ms=elapsed_ms,
+            status="online",
+        )
+    except asyncio.TimeoutError:
+        peer_registry._spawn_ready_events.pop(result.display_name, None)
+        raise HTTPException(
+            status_code=status.HTTP_408_REQUEST_TIMEOUT,
+            detail={
+                "error": "timeout",
+                "display_name": result.display_name,
+                "elapsed_ms": request.ready_timeout_ms,
+            },
+        )
 
 
 @router.post("/kill", response_model=KillResponse)

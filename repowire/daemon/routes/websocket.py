@@ -145,6 +145,7 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             role=role,
             peer_id=claimed_peer_id,
         )
+        peer_registry._fire_spawn_event(assigned_name)
         session_id = peer_id
 
         # Register with transport (handles connection + status tracking)
