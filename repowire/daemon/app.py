@@ -141,6 +141,7 @@ def create_app(
                 bot_token=cfg.telegram.bot_token,
                 chat_id=cfg.telegram.chat_id,
                 daemon_url=daemon_url,
+                circle=cfg.telegram.circle,
             )))
 
         if cfg.slack.bot_token and cfg.slack.app_token and cfg.slack.channel_id:
