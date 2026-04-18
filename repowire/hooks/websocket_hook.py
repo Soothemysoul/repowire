@@ -223,12 +223,13 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         if websocket:
             try:
                 tmux_info = await asyncio.to_thread(get_tmux_info)
+                pong_circle = os.environ.get("REPOWIRE_CIRCLE") or tmux_info["session_name"]
                 await websocket.send(
                     json.dumps(
                         {
                             "type": "pong",
                             "pane_alive": pane_alive,
-                            "circle": tmux_info["session_name"],
+                            "circle": pong_circle,
                         }
                     )
                 )
@@ -246,7 +247,7 @@ async def main() -> int:
         logger.error("TMUX_PANE not set")
         return 1
 
-    circle = get_tmux_info()["session_name"] or "default"
+    circle = os.environ.get("REPOWIRE_CIRCLE") or get_tmux_info()["session_name"] or "default"
     display_name = get_display_name()
     backend_str = os.environ.get("REPOWIRE_BACKEND", "claude-code")
     try:
