@@ -1,5 +1,6 @@
 """Tests for daemon HTTP routes (peers, messages, events)."""
 
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,6 +34,8 @@ def _make_test_app(tmp_path: Path):
     # Override events path to avoid loading real events
     registry._events_path = tmp_path / "events.json"
     registry._events.clear()
+    # Disable lazy_repair's demote logic (no WS in tests would mark all peers offline)
+    registry._last_repair = time.monotonic() + 3600
 
     app_state = SimpleNamespace(
         config=cfg,
@@ -172,6 +175,42 @@ class TestPeers:
         r = await client.get("/peers")
         names = [p["display_name"] for p in r.json()["peers"]]
         assert names.count(name) == 1
+
+    async def test_list_peers_status_filter(self, client):
+        r = await client.post("/peers", json={
+            "name": "onlinepeer",
+            "path": "/tmp/onlinepeer",
+            "circle": "default",
+            "backend": "claude-code",
+        })
+        online_name = r.json()["display_name"]
+
+        r = await client.post("/peers", json={
+            "name": "offlinepeer",
+            "path": "/tmp/offlinepeer",
+            "circle": "default",
+            "backend": "claude-code",
+        })
+        offline_name = r.json()["display_name"]
+
+        r = await client.post("/session/update", json={
+            "peer_name": offline_name,
+            "status": "offline",
+        })
+        assert r.status_code == 200
+
+        r = await client.get("/peers")
+        assert len(r.json()["peers"]) == 2
+
+        r = await client.get("/peers", params={"status": "online"})
+        peers = r.json()["peers"]
+        assert len(peers) == 1
+        assert peers[0]["display_name"] == online_name
+
+        r = await client.get("/peers", params={"status": "offline"})
+        peers = r.json()["peers"]
+        assert len(peers) == 1
+        assert peers[0]["display_name"] == offline_name
 
 
 # -- Events --

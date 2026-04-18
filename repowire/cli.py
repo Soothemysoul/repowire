@@ -909,13 +909,15 @@ def _get_daemon_url() -> str:
 
 
 @peer.command(name="list")
-def peer_list() -> None:
+@click.option("--show-offline", "-a", is_flag=True, help="Include offline peers")
+def peer_list(show_offline: bool) -> None:
     """List all registered peers and their status."""
     import httpx
 
     try:
+        params = None if show_offline else {"status": "online"}
         with httpx.Client(timeout=5.0) as client:
-            resp = client.get(f"{_get_daemon_url()}/peers")
+            resp = client.get(f"{_get_daemon_url()}/peers", params=params)
             resp.raise_for_status()
             peers = resp.json().get("peers", [])
     except httpx.ConnectError:

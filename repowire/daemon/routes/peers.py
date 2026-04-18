@@ -12,7 +12,7 @@ from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_peer_registry
 from repowire.daemon.routes._shared import OkResponse, is_valid_identifier
-from repowire.protocol.peers import Peer, PeerRole
+from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 router = APIRouter(tags=["peers"])
 
@@ -90,12 +90,19 @@ class UnregisterPeerRequest(BaseModel):
 
 @router.get("/peers", response_model=PeersResponse)
 async def list_peers(
+    status: str | None = Query(None, description="Filter by status (online, offline)"),
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
-    """Get list of all registered peers."""
+    """Get list of all registered peers, optionally filtered by status."""
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
     peers = await peer_registry.get_all_peers()
+
+    if status == "online":
+        peers = [p for p in peers if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)]
+    elif status == "offline":
+        peers = [p for p in peers if p.status == PeerStatus.OFFLINE]
+
     return PeersResponse(peers=[_peer_to_info(p) for p in peers])
 
 

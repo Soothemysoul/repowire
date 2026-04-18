@@ -37,14 +37,16 @@ def _get_http_client() -> httpx.AsyncClient:
     return _http_client
 
 
-async def daemon_request(method: str, path: str, body: dict | None = None) -> dict:
+async def daemon_request(
+    method: str, path: str, body: dict | None = None, params: dict | None = None
+) -> dict:
     """Make an HTTP request to the daemon."""
     global _http_client
     try:
         client = _get_http_client()
         url = f"{DAEMON_URL}{path}"
         if method == "GET":
-            resp = await client.get(url)
+            resp = await client.get(url, params=params)
         else:
             resp = await client.post(url, json=body or {})
         resp.raise_for_status()
@@ -165,16 +167,20 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    async def list_peers() -> str:
+    async def list_peers(show_offline: bool = False) -> str:
         """[Repowire mesh] List all peers across projects and machines.
 
-        Returns TSV: peer_id, name, project, circle, status, path, machine, description.
+        By default shows only online/busy peers. Set show_offline=True to include
+        offline peers.
+
+        Returns TSV: peer_id, name, project, circle, status, path, machine, description, backend.
         These are cross-project peers reachable via ask_peer/notify_peer. Do NOT
         use SendMessage to contact them -- SendMessage is a Claude Code harness
         tool for same-session teammates only.
         """
         await _ensure_registered()
-        result = await daemon_request("GET", "/peers")
+        params = None if show_offline else {"status": "online"}
+        result = await daemon_request("GET", "/peers", params=params)
         peers = result.get("peers", [])
         rows = [tsv_header]
         for p in peers:
