@@ -72,6 +72,17 @@ class KillResponse(BaseModel):
     ok: bool = True
 
 
+def _command_allowed(command: str, allowed: list[str]) -> bool:
+    """Return True if command exactly matches an allowed entry, or starts
+    with one of them followed by a space (so flags after the role are ok).
+    """
+    if not allowed:
+        return False
+    if command in allowed:
+        return True
+    return any(command.startswith(a + " ") for a in allowed)
+
+
 def _validate_spawn_request(path: str, command: str) -> None:
     """Validate path and command against the spawn allowlists.
 
@@ -91,7 +102,7 @@ def _validate_spawn_request(path: str, command: str) -> None:
             ),
         )
 
-    if command not in allowed_commands:
+    if not _command_allowed(command, allowed_commands):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Command not in allowed_commands: {command!r}",
