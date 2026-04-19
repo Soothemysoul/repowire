@@ -14,6 +14,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from repowire.config.models import AgentType
+from repowire.hooks._identity import resolve_agent_path
 from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
@@ -156,7 +157,8 @@ def main(backend: str = "claude-code") -> int:
         return 0
 
     event = input_data.get("hook_event_name")
-    cwd = input_data.get("cwd", os.getcwd())
+    cwd = input_data.get("cwd", os.getcwd())  # actual working dir (git, pane metadata)
+    identity_path = resolve_agent_path(fallback_cwd=cwd)  # path daemon uses for display_name
     hook_session_id = input_data.get("session_id", "")
 
     # Convert backend string to AgentType
@@ -170,7 +172,7 @@ def main(backend: str = "claude-code") -> int:
     pane_id = tmux_info["pane_id"]
 
     # folder_name is used as metadata.project for human context
-    folder_name = get_peer_name(cwd)
+    folder_name = get_peer_name(identity_path)
 
     if event == "SessionStart":
         # One ws-hook owns a pane at a time. A repeated SessionStart with the
@@ -225,7 +227,7 @@ def main(backend: str = "claude-code") -> int:
         circle = os.environ.get("REPOWIRE_CIRCLE") or tmux_info["session_name"] or "default"
         metadata = {"project": folder_name}
         peer_id, display_name = _register_peer_http(
-            cwd,
+            identity_path,
             circle,
             backend_type,
             pane_id=pane_id,

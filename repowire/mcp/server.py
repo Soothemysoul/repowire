@@ -12,6 +12,7 @@ import httpx
 from mcp.server.fastmcp import FastMCP
 
 from repowire.config.models import DEFAULT_DAEMON_URL
+from repowire.hooks._identity import resolve_agent_path
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
 from repowire.hooks.utils import get_display_name
 from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
@@ -122,9 +123,10 @@ async def _ensure_registered() -> None:
     else:
         backend = os.environ.get("REPOWIRE_BACKEND", "claude-code")
     try:
+        _identity = resolve_agent_path()
         body: dict = {
-            "name": Path.cwd().name,
-            "path": str(Path.cwd()),
+            "name": Path(_identity).name,
+            "path": _identity,
             "circle": tmux_info["session_name"] or "default",
             "backend": backend,
         }
