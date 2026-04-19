@@ -261,3 +261,160 @@ async def test_update_peer_role_syncs_peer_and_mapping(tmp_path):
 async def test_update_peer_role_returns_false_for_unknown_peer(tmp_path):
     registry = _make_registry(tmp_path)
     assert await registry.update_peer_role("ghost", PeerRole.ORCHESTRATOR) is False
+
+
+# ---------------------------------------------------------------------------
+# beads-els.2 — reconnect peer_id reuse (identity-based, no explicit peer_id)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_daemon_restart_reuses_peer_id(tmp_path):
+    """After daemon restart (_peers cleared, mappings survive on disk),
+    reconnecting peer must get the SAME peer_id — not a fresh UUID."""
+    registry = _make_registry(tmp_path)
+
+    first_id, first_name = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/devops-worker",
+        role=PeerRole.AGENT,
+    )
+
+    # Simulate daemon restart: in-memory peers gone, mappings loaded from disk.
+    registry._peers.clear()
+
+    second_id, second_name = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/devops-worker",
+        role=PeerRole.AGENT,
+    )
+
+    assert second_id == first_id, (
+        f"Expected peer_id reuse after daemon restart, got {second_id} != {first_id}"
+    )
+    assert second_name == first_name
+    assert "-2-" not in second_name
+
+
+@pytest.mark.asyncio
+async def test_offline_peer_reuse_within_ttl(tmp_path):
+    """OFFLINE peer in _peers with recent disconnect must be reused (sub-case A)."""
+    registry = _make_registry(tmp_path)
+
+    first_id, first_name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/backend-head",
+        role=PeerRole.ORCHESTRATOR,
+    )
+
+    # Peer goes offline (WS drop)
+    await registry.mark_offline(first_id)
+    assert registry._peers[first_id].status.value == "offline"
+
+    # Reconnect without explicit peer_id — should reuse
+    second_id, second_name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/backend-head",
+        role=PeerRole.ORCHESTRATOR,
+    )
+
+    assert second_id == first_id
+    assert second_name == first_name
+    assert registry._peers[second_id].status.value == "online"
+
+
+@pytest.mark.asyncio
+async def test_offline_peer_expired_ttl_gets_fresh_id(tmp_path):
+    """OFFLINE peer whose last_seen exceeds TTL must NOT be reused for
+    non-singleton roles — treat as genuine agent death."""
+    import datetime as _dt
+
+    registry = _make_registry(tmp_path)
+
+    first_id, _ = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/some-worker",
+        role=PeerRole.AGENT,
+    )
+    await registry.mark_offline(first_id)
+
+    # Back-date last_seen well past TTL (default 120s)
+    old_peer = registry._peers[first_id]
+    old_peer.last_seen = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=300)
+
+    second_id, second_name = await registry.allocate_and_register(
+        circle="dev",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/some-worker",
+        role=PeerRole.AGENT,
+    )
+
+    assert second_id != first_id, "Stale peer must not be reused after TTL expiry"
+
+
+@pytest.mark.asyncio
+async def test_singleton_role_reuses_without_ttl(tmp_path):
+    """Singleton roles must be reused regardless of last_seen age."""
+    import datetime as _dt
+
+    cfg = Config()
+    cfg.daemon.spawn.singleton_roles = ["pm"]
+
+    path = tmp_path / "sessions.json"
+    registry = PeerRegistry(
+        config=cfg,
+        message_router=MagicMock(),
+        persistence_path=path,
+    )
+
+    first_id, _ = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/pm",
+        role=PeerRole.ORCHESTRATOR,
+    )
+    await registry.mark_offline(first_id)
+
+    # Back-date far beyond any TTL
+    old_peer = registry._peers[first_id]
+    old_peer.last_seen = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(hours=2)
+
+    second_id, _ = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/pm",
+        role=PeerRole.ORCHESTRATOR,
+    )
+
+    assert second_id == first_id, "Singleton role must reuse peer_id regardless of age"
+
+
+@pytest.mark.asyncio
+async def test_daemon_restart_preserves_display_name_no_suffix(tmp_path):
+    """End-to-end: no '-2' suffix after daemon restart reconnect."""
+    registry = _make_registry(tmp_path)
+
+    _, first_name = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/devops-worker",
+    )
+    assert "-2-" not in first_name
+
+    registry._peers.clear()
+
+    _, second_name = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/devops-worker",
+    )
+
+    assert second_name == first_name, (
+        f"Display name changed after restart: {first_name!r} -> {second_name!r}"
+    )
+    assert "-2-" not in second_name

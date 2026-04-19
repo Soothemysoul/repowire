@@ -425,6 +425,104 @@ class PeerRegistry:
     # Allocate + register (atomic, the preferred public API)
     # ------------------------------------------------------------------
 
+    def _try_reuse_by_identity_unlocked(
+        self,
+        path: str,
+        circle: str,
+        backend: AgentType,
+        pane_id: str | None,
+        tmux_session: str | None,
+        machine: str,
+        role: PeerRole | None,
+        reconnect_ttl: float = 120.0,
+    ) -> tuple[str, str] | None:
+        """Attempt identity-based peer_id reuse. Must hold _lock.
+
+        Handles two reconnect scenarios without explicit peer_id:
+
+        A. OFFLINE peer exists in _peers (WS dropped, daemon still running):
+           reuse if within TTL or if the role is singleton.
+
+        B. No peer in _peers but a matching mapping survives (daemon restart):
+           always reuse — the mapping IS the stable identity and must not be
+           pruned just because _peers is empty after a restart.
+
+        Returns (peer_id, display_name) on success, None to fall through to
+        fresh registration.
+        """
+        now = datetime.now(timezone.utc)
+
+        # Sub-case A: OFFLINE peer in _peers
+        for sid, peer in self._peers.items():
+            if (
+                peer.path == path
+                and peer.circle == circle
+                and peer.backend == backend
+                and peer.status == PeerStatus.OFFLINE
+            ):
+                age = (now - peer.last_seen).total_seconds() if peer.last_seen else 0.0
+                if self._is_singleton_role(path) or age <= reconnect_ttl:
+                    peer.status = PeerStatus.ONLINE
+                    peer.last_seen = now
+                    if role is not None:
+                        peer.role = role
+                    if pane_id:
+                        self._release_pane(pane_id, sid)
+                        peer.pane_id = pane_id
+                    if tmux_session:
+                        peer.tmux_session = tmux_session
+                    if machine != "unknown":
+                        peer.machine = machine
+                    logger.info(f"Peer reconnected (offline reuse): {peer.display_name} ({sid})")
+                    return sid, peer.display_name
+
+        # Sub-case B: mapping exists but no live peer — daemon restart scenario.
+        # Only runs when the peer is absent from _peers entirely (restart); if
+        # the peer IS in _peers as OFFLINE but past TTL, it genuinely died and
+        # sub-case A already declined to reuse it — don't override that decision.
+        # _prune_name_from_mappings would silently delete this mapping if we
+        # fell through to _build_display_name, causing a new peer_id to be minted.
+        peer_in_memory = any(
+            p.path == path and p.circle == circle and p.backend == backend
+            for p in self._peers.values()
+        )
+        if peer_in_memory:
+            return None
+        expected_name = build_base_display_name(path, backend)
+        for sid, mapping in self._mappings.items():
+            if (
+                mapping.display_name == expected_name
+                and mapping.circle == circle
+                and mapping.backend == backend
+            ):
+                effective_role = role if role is not None else mapping.role
+                restored = Peer(
+                    peer_id=sid,
+                    display_name=mapping.display_name,
+                    circle=circle,
+                    backend=backend,
+                    role=effective_role,
+                    status=PeerStatus.ONLINE,
+                    last_seen=now,
+                    pane_id=pane_id,
+                    tmux_session=tmux_session,
+                    path=path,
+                    machine=machine,
+                    metadata={},
+                )
+                self._peers[sid] = restored
+                if pane_id:
+                    self._release_pane(pane_id, sid)
+                mapping.path = path
+                if role is not None:
+                    mapping.role = effective_role
+                mapping.updated_at = now.isoformat()
+                self._mappings_dirty = True
+                logger.info(f"Peer reconnected (mapping restore): {mapping.display_name} ({sid})")
+                return sid, mapping.display_name
+
+        return None
+
     async def allocate_and_register(
         self,
         *,
@@ -473,6 +571,25 @@ class PeerRegistry:
                     existing.machine = machine
                 logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
                 return peer_id, existing.display_name
+
+            # Identity-based reconnect: no explicit peer_id, but (path, circle,
+            # backend) uniquely identifies the peer. Reuse the old peer_id to
+            # prevent display_name churn (e.g. "-2" suffix) on daemon restart or
+            # transient WS drops. Must run before _build_display_name because
+            # that function calls _prune_name_from_mappings which would discard
+            # the historical mapping when _peers is empty after a restart.
+            if path:
+                reused = self._try_reuse_by_identity_unlocked(
+                    path=path,
+                    circle=circle,
+                    backend=backend,
+                    pane_id=pane_id,
+                    tmux_session=tmux_session,
+                    machine=machine,
+                    role=role,
+                )
+                if reused:
+                    return reused
 
             # Fresh registration: daemon owns the name. Before building the
             # name (which may prune orphan mappings as part of name-reclaim),
