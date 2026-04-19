@@ -108,17 +108,24 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
             await websocket.close(code=4002, reason="Invalid backend")
             return
 
-        # Validate role
-        role_str = data.get("role", "agent")
-        try:
-            role = PeerRole(role_str)
-        except ValueError:
-            valid = ", ".join(r.value for r in PeerRole)
-            await websocket.send_json(
-                {"type": "error", "error": f"Invalid role: must be one of {valid}"}
-            )
-            await websocket.close(code=4002, reason="Invalid role")
-            return
+        # Validate role. An absent key means "caller didn't specify" — we pass
+        # None down and the registry preserves the stored role. Older hooks
+        # that predate role propagation reconnect without this field; we must
+        # not silently demote them to AGENT.
+        role_str = data.get("role")
+        role: PeerRole | None
+        if role_str is None:
+            role = None
+        else:
+            try:
+                role = PeerRole(role_str)
+            except ValueError:
+                valid = ", ".join(r.value for r in PeerRole)
+                await websocket.send_json(
+                    {"type": "error", "error": f"Invalid role: must be one of {valid}"}
+                )
+                await websocket.close(code=4002, reason="Invalid role")
+                return
 
         # Validate path if provided
         if path:

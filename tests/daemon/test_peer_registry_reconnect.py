@@ -154,3 +154,110 @@ async def test_find_or_allocate_mapping_updates_role_on_reuse(tmp_path):
     )
     assert sid == first[0]
     assert registry._mappings[sid].role == PeerRole.SERVICE
+
+
+# ---------------------------------------------------------------------------
+# Guards for role=None (caller didn't specify). These exist because an earlier
+# iteration of the fix blindly overwrote stored role with the WS handler's
+# default AGENT whenever an old hook reconnected without sending role — which
+# silently demoted brain-admin from SERVICE to AGENT on the first restart.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconnect_without_role_preserves_existing_role(tmp_path):
+    """In-memory reconnect with role=None must not touch peer.role."""
+    registry = _make_registry(tmp_path)
+    peer_id, _ = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/admin",
+        role=PeerRole.SERVICE,
+    )
+
+    await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/admin",
+        role=None,
+        peer_id=peer_id,
+    )
+    assert registry._peers[peer_id].role == PeerRole.SERVICE
+
+
+@pytest.mark.asyncio
+async def test_fresh_path_without_role_preserves_mapping_role(tmp_path):
+    """Daemon-restart lifecycle for an old hook: _peers cleared, caller
+    reconnects with role=None (no role in connect payload). The new live
+    peer must inherit the mapping's stored role, not the AGENT default."""
+    registry = _make_registry(tmp_path)
+
+    first_id, _ = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/admin",
+        role=PeerRole.SERVICE,
+    )
+    assert registry._mappings[first_id].role == PeerRole.SERVICE
+
+    registry._peers.clear()
+
+    second_id, _ = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/admin",
+        role=None,
+    )
+    assert registry._peers[second_id].role == PeerRole.SERVICE
+    assert registry._mappings[second_id].role == PeerRole.SERVICE
+
+
+@pytest.mark.asyncio
+async def test_find_or_allocate_mapping_preserves_role_when_none(tmp_path):
+    """Unit-level guard: _find_or_allocate_mapping with role=None on reuse
+    must leave mapping.role untouched."""
+    registry = _make_registry(tmp_path)
+
+    first = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/svc",
+        role=PeerRole.ORCHESTRATOR,
+    )
+    display_name = registry._peers[first[0]].display_name
+
+    sid = registry._find_or_allocate_mapping(
+        display_name=display_name,
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/svc",
+        role=None,
+    )
+    assert sid == first[0]
+    assert registry._mappings[sid].role == PeerRole.ORCHESTRATOR
+
+
+@pytest.mark.asyncio
+async def test_update_peer_role_syncs_peer_and_mapping(tmp_path):
+    """PATCH /peers/{id}/role backing method: rewrite role on both the live
+    Peer and its persistent mapping so the new role survives the next
+    daemon restart."""
+    registry = _make_registry(tmp_path)
+
+    peer_id, name = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/tmp/director",
+        role=PeerRole.AGENT,
+    )
+
+    updated = await registry.update_peer_role(name, PeerRole.ORCHESTRATOR)
+    assert updated is True
+    assert registry._peers[peer_id].role == PeerRole.ORCHESTRATOR
+    assert registry._mappings[peer_id].role == PeerRole.ORCHESTRATOR
+
+
+@pytest.mark.asyncio
+async def test_update_peer_role_returns_false_for_unknown_peer(tmp_path):
+    registry = _make_registry(tmp_path)
+    assert await registry.update_peer_role("ghost", PeerRole.ORCHESTRATOR) is False
