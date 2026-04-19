@@ -330,16 +330,18 @@ def create_mcp_server() -> FastMCP:
         return f"description updated: {description}"
 
     @mcp.tool()
-    async def spawn_peer(path: str, command: str, circle: str = "default") -> str:
+    async def spawn_peer(
+        path: str,
+        command: str,
+        circle: str = "default",
+        wait_for_ready: bool = False,
+        ready_timeout_ms: int = 30000,
+    ) -> str | dict:
         """[Repowire mesh] Spawn a new coding session in a different project directory.
 
         The command must exactly match an entry in daemon.spawn.allowed_commands
         in ~/.repowire/config.yaml. If no allowed_commands are configured, spawn
         is disabled and this will return an error.
-
-        The spawned agent self-registers into the mesh via its SessionStart hook
-        within a few seconds. Use list_peers() to confirm registration and get
-        the peer_id.
 
         The circle maps to the tmux session name and cannot be reassigned after
         spawn.
@@ -352,17 +354,35 @@ def create_mcp_server() -> FastMCP:
             path: Absolute path to the project directory
             command: Command to run (e.g. "claude", "claude --dangerously-skip-permissions")
             circle: Circle to spawn into (default: "default") -- maps to tmux session name
+            wait_for_ready: If True, block until the peer's WebSocket hook connects
+                (peer is ONLINE). Use this instead of manually polling list_peers().
+            ready_timeout_ms: Max time to wait for peer readiness in milliseconds
+                (default 30000). Raises an error if the peer does not connect in time.
 
         Returns:
-            Spawn confirmation with display_name and tmux_session
+            Without wait_for_ready: spawn confirmation with display_name and tmux_session.
+            With wait_for_ready: dict with display_name, tmux_session, elapsed_ms, status="online".
         """
         result = await daemon_request(
             "POST",
             "/spawn",
-            {"path": path, "command": command, "circle": circle},
+            {
+                "path": path,
+                "command": command,
+                "circle": circle,
+                "wait_for_ready": wait_for_ready,
+                "ready_timeout_ms": ready_timeout_ms,
+            },
         )
         name = result["display_name"]
         tmux = result["tmux_session"]
+        if wait_for_ready:
+            elapsed = result.get("elapsed_ms", "?")
+            return (
+                f"Spawned {name} (tmux: {tmux}). "
+                f"Peer is ONLINE ({elapsed}ms). "
+                f"Address it as '{name}' via ask_peer/notify_peer."
+            )
         return (
             f"Spawned {name} (tmux: {tmux}). "
             f"Peer will self-register shortly. Use list_peers() to confirm "

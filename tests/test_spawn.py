@@ -536,3 +536,29 @@ class TestMcpRegistration:
         mcp_server._registered = False
         mcp_server._cached_peer_name = None
 
+
+class TestTmuxServer:
+    """Tests for _tmux_server helper."""
+
+    @patch("repowire.spawn.libtmux.Server")
+    def test_tmux_server_no_env(self, mock_server_class: MagicMock) -> None:
+        """Test _tmux_server returns bare Server when env var is not set."""
+        import os
+        from repowire.spawn import _tmux_server
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REPOWIRE_TMUX_SOCKET", None)
+            _tmux_server()
+
+        mock_server_class.assert_called_once_with()
+
+    @patch("repowire.spawn.libtmux.Server")
+    def test_tmux_server_with_env(self, mock_server_class: MagicMock) -> None:
+        """Test _tmux_server passes socket_name when REPOWIRE_TMUX_SOCKET is set."""
+        import os
+        from repowire.spawn import _tmux_server
+
+        with patch.dict(os.environ, {"REPOWIRE_TMUX_SOCKET": "voice"}):
+            _tmux_server()
+
+        mock_server_class.assert_called_once_with(socket_name="voice")

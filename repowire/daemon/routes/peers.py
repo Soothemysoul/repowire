@@ -70,7 +70,13 @@ class RegisterPeerRequest(BaseModel):
     pane_id: str | None = Field(None, description="Tmux pane ID")
     backend: AgentType = Field(default=AgentType.CLAUDE_CODE, description="Agent type")
     circle: str | None = Field(None, description="Circle (logical subnet)")
-    role: PeerRole = Field(default=PeerRole.AGENT, description="Peer role")
+    role: PeerRole | None = Field(
+        default=None,
+        description=(
+            "Peer role. Omit to preserve the stored role on reuse — old hooks "
+            "that predate role propagation would otherwise force AGENT."
+        ),
+    )
     metadata: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("circle")
@@ -90,12 +96,15 @@ class UnregisterPeerRequest(BaseModel):
 
 @router.get("/peers", response_model=PeersResponse)
 async def list_peers(
+    circle: str | None = Query(None, description="Filter by circle (logical subnet)"),
     _: str | None = Depends(require_auth),
 ) -> PeersResponse:
-    """Get list of all registered peers."""
+    """Get list of all registered peers, optionally filtered by circle."""
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
     peers = await peer_registry.get_all_peers()
+    if circle is not None:
+        peers = [p for p in peers if p.circle == circle]
     return PeersResponse(peers=[_peer_to_info(p) for p in peers])
 
 
@@ -238,6 +247,34 @@ async def set_peer_description(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Peer not found: {name}",
+        )
+    return OkResponse()
+
+
+class SetRoleRequest(BaseModel):
+    """Request to set peer's role out-of-band."""
+
+    role: PeerRole = Field(..., description="New peer role")
+
+
+@router.patch("/peers/{identifier}/role", response_model=OkResponse)
+async def set_peer_role(
+    identifier: str,
+    request: SetRoleRequest,
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Update a peer's role without a reconnect.
+
+    Needed when a long-running hook is on an older build that doesn't send
+    role on reconnect — an operator can hot-fix the stored role on the live
+    peer and its persisted mapping. Looks up by peer_id or display_name.
+    """
+    peer_registry = get_peer_registry()
+    updated = await peer_registry.update_peer_role(identifier, request.role)
+    if not updated:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {identifier}",
         )
     return OkResponse()
 

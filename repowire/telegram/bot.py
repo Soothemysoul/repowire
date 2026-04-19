@@ -14,6 +14,9 @@ import json
 import logging
 import os
 import re
+import subprocess
+import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -27,6 +30,10 @@ from repowire.config.models import DEFAULT_DAEMON_URL
 logger = logging.getLogger(__name__)
 
 _MD_ESCAPE_RE = re.compile(r"([_*\[\]()~`>#+=|{}.!\-])")
+_NOTIF_ID_RE = re.compile(r"\[#(notif-[0-9a-f]+)\]")
+
+_MSG_MAP_MAX = 1000   # max entries in reply-context map
+_MSG_MAP_TTL = 86400  # 24 h in seconds
 
 
 def _esc(text: str) -> str:
@@ -45,6 +52,20 @@ def _ws_url(http_url: str) -> str:
     """Convert http(s) URL to ws(s)."""
     p = urlparse(http_url)
     return urlunparse(p._replace(scheme="wss" if p.scheme == "https" else "ws"))
+
+
+def _resolve_whisper_config() -> tuple[str, str, str] | None:
+    """Read REPOWIRE_WHISPER_{CLI,MODEL,LANG} from env.
+
+    Returns (cli_path, model_path, lang) when both required vars are set,
+    or None when either is missing. Lang defaults to 'ru'.
+    """
+    cli = os.environ.get("REPOWIRE_WHISPER_CLI")
+    model = os.environ.get("REPOWIRE_WHISPER_MODEL")
+    if not cli or not model:
+        return None
+    lang = os.environ.get("REPOWIRE_WHISPER_LANG", "ru")
+    return cli, model, lang
 
 
 class TelegramPeer:
@@ -69,6 +90,8 @@ class TelegramPeer:
         self._tg_offset = 0
         self._reply_target: str | None = None  # peer to send next message to
         self._task: asyncio.Task[None] | None = None
+        # key: tg_msg_id; value: {from_peer, text, notif_id, ts}; TTL 24h + cap 1000
+        self._tg_msg_to_notif: dict[int, dict] = {}
 
     async def _run(self) -> None:
         await asyncio.gather(self._ws_loop(), self._poll_loop())
@@ -134,7 +157,16 @@ class TelegramPeer:
         text = msg.get("text", "")
 
         if t == "notify":
-            await self._tg_send(f"*@{_esc(who)}*\n{_esc(text)}")
+            msg_id = await self._tg_send(f"*@{_esc(who)}*\n{_esc(text)}")
+            if msg_id is not None:
+                m = _NOTIF_ID_RE.search(text)
+                self._trim_msg_map()
+                self._tg_msg_to_notif[msg_id] = {
+                    "from_peer": who,
+                    "text": text,
+                    "notif_id": m.group(1) if m else None,
+                    "ts": time.time(),
+                }
         elif t == "query":
             await self._tg_send(f"❓ *@{_esc(who)}*\n{_esc(text)}")
         elif t == "broadcast":
@@ -174,6 +206,19 @@ class TelegramPeer:
         if chat_id != self._chat_id:
             return
 
+        # Voice
+        voice = m.get("voice")
+        if voice:
+            await self._on_voice(voice, message_id=m.get("message_id"))
+            return
+
+        # Document (file attachment)
+        doc = m.get("document")
+        if doc:
+            caption = m.get("caption", "").strip()
+            await self._on_document(doc, caption, message_id=m.get("message_id"))
+            return
+
         # Photo
         photos = m.get("photo", [])
         if photos:
@@ -184,7 +229,18 @@ class TelegramPeer:
         # Text
         text = m.get("text", "")
         if text:
-            await self._on_text(text.strip(), message_id=m.get("message_id"))
+            text = text.strip()
+            reply = m.get("reply_to_message")
+            if reply:
+                ctx = self._tg_msg_to_notif.get(reply.get("message_id"))
+                if ctx and (time.time() - ctx["ts"]) < _MSG_MAP_TTL:
+                    excerpt = ctx["text"][:120].replace("\n", " ")
+                    ellipsis = "..." if len(ctx["text"]) > 120 else ""
+                    text = (
+                        f'[reply to @{ctx["from_peer"]} {ctx["notif_id"] or ""}: '
+                        f'"{excerpt}{ellipsis}"]\n{text}'
+                    )
+            await self._on_text(text, message_id=m.get("message_id"))
 
     async def _on_callback(self, cb: dict) -> None:
         data = cb.get("data", "")
@@ -292,11 +348,146 @@ class TelegramPeer:
         except Exception as e:
             await self._tg_send(f"Error: {_esc(str(e))}")
 
+    async def _on_voice(self, voice: dict, message_id: int | None = None) -> None:
+        """Handle incoming Telegram voice message — download, transcribe, forward."""
+        if not self._reply_target:
+            await self._tg_send(
+                "Select a peer first with /select or /peers, then send the voice\\."
+            )
+            return
+
+        cfg = _resolve_whisper_config()
+        if cfg is None:
+            await self._tg_send(
+                "Voice disabled: set `REPOWIRE_WHISPER_CLI` and "
+                "`REPOWIRE_WHISPER_MODEL` in the service environment\\."
+            )
+            return
+        whisper_cli, whisper_model, whisper_lang = cfg
+
+        try:
+            file_id = voice.get("file_id", "")
+            r = await self._http.get(
+                f"{self._bot_path}/getFile",
+                params={"file_id": file_id},
+            )
+            file_path = r.json().get("result", {}).get("file_path", "")
+            if not file_path:
+                await self._tg_send("Failed to get voice file from Telegram\\.")
+                return
+
+            async with httpx.AsyncClient() as dl:
+                token = self._bot_path.removeprefix("/bot")
+                voice_r = await dl.get(
+                    f"https://api.telegram.org/file/bot{token}/{file_path}",
+                    timeout=30.0,
+                )
+
+            with tempfile.NamedTemporaryFile(suffix=".oga", delete=False) as oga:
+                oga.write(voice_r.content)
+                oga_path = oga.name
+
+            wav_path = oga_path.replace(".oga", ".wav")
+            try:
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    ["ffmpeg", "-y", "-i", oga_path, "-ar", "16000", "-ac", "1",
+                     "-c:a", "pcm_s16le", wav_path],
+                    capture_output=True, timeout=30,
+                )
+                if proc.returncode != 0:
+                    await self._tg_send("Failed to convert voice file\\.")
+                    return
+
+                proc = await asyncio.to_thread(
+                    subprocess.run,
+                    [whisper_cli, "-m", whisper_model, "-f", wav_path,
+                     "-l", whisper_lang, "--no-timestamps", "-nt"],
+                    capture_output=True, text=True, timeout=120,
+                )
+                lines = [
+                    line for line in proc.stdout.splitlines()
+                    if line.strip()
+                    and not line.startswith("whisper_")
+                    and not line.startswith("system_info")
+                    and not line.startswith("main:")
+                ]
+                transcript = "\n".join(lines).strip()
+
+                if not transcript:
+                    await self._tg_send("Could not transcribe voice message\\.")
+                    return
+
+                msg = f"[voice] {transcript}"
+                await self._notify(self._reply_target, msg, message_id=message_id)
+            finally:
+                for p in (oga_path, wav_path):
+                    try:
+                        os.unlink(p)
+                    except OSError:
+                        pass
+
+        except Exception as e:
+            logger.warning("Voice handling failed", exc_info=True)
+            await self._tg_send(f"Voice error: {_esc(str(e))}")
+
+    async def _on_document(self, doc: dict, caption: str, message_id: int | None = None) -> None:
+        """Handle incoming Telegram document — upload to daemon, notify peer."""
+        if not self._reply_target:
+            await self._tg_send(
+                "Select a peer first with /select or /peers, then send the file\\."
+            )
+            return
+
+        try:
+            file_id = doc.get("file_id", "")
+            file_name = doc.get("file_name", "document")
+            mime_type = doc.get("mime_type", "application/octet-stream")
+
+            r = await self._http.get(
+                f"{self._bot_path}/getFile",
+                params={"file_id": file_id},
+            )
+            file_path = r.json().get("result", {}).get("file_path", "")
+            if not file_path:
+                await self._tg_send("Failed to get file from Telegram\\.")
+                return
+
+            async with httpx.AsyncClient() as dl:
+                token = self._bot_path.removeprefix("/bot")
+                file_r = await dl.get(
+                    f"https://api.telegram.org/file/bot{token}/{file_path}",
+                    timeout=30.0,
+                )
+
+            async with httpx.AsyncClient() as ul:
+                upload_r = await ul.post(
+                    f"{self._daemon_url}/attachments",
+                    files={"file": (file_name, file_r.content, mime_type)},
+                    timeout=30.0,
+                )
+
+            if upload_r.status_code != 200:
+                await self._tg_send("Failed to upload file\\.")
+                return
+
+            att = upload_r.json()
+            msg = caption or f"File: {file_name}"
+            msg += f"\n[Attachment: {att['path']}]"
+
+            await self._notify(self._reply_target, msg, message_id=message_id)
+        except Exception as e:
+            logger.warning("Document handling failed", exc_info=True)
+            await self._tg_send(f"File error: {_esc(str(e))}")
+
     # -- Commands --
 
     async def _cmd_peers(self) -> None:
         try:
-            r = await self._http.get(f"{self._daemon_url}/peers")
+            r = await self._http.get(
+                f"{self._daemon_url}/peers",
+                params={"circle": self._circle},
+            )
             peers = r.json().get("peers", [])
             active = [p for p in peers if p.get("status") in ("online", "busy")]
 
@@ -362,7 +553,8 @@ class TelegramPeer:
         except Exception:
             logger.warning("Telegram react failed", exc_info=True)
 
-    async def _tg_send(self, text: str, markup: dict | None = None) -> None:
+    async def _tg_send(self, text: str, markup: dict | None = None) -> int | None:
+        """Send a message and return the Telegram message_id, or None on failure."""
         try:
             payload: dict[str, Any] = {
                 "chat_id": self._chat_id,
@@ -371,9 +563,20 @@ class TelegramPeer:
             }
             if markup:
                 payload["reply_markup"] = markup
-            await self._http.post(f"{self._bot_path}/sendMessage", json=payload)
+            r = await self._http.post(f"{self._bot_path}/sendMessage", json=payload)
+            return r.json().get("result", {}).get("message_id")
         except Exception:
             logger.warning("Telegram send failed", exc_info=True)
+            return None
+
+    def _trim_msg_map(self) -> None:
+        """Remove expired entries (TTL) and enforce cap (oldest first)."""
+        now = time.time()
+        expired = [k for k, v in self._tg_msg_to_notif.items() if now - v["ts"] > _MSG_MAP_TTL]
+        for k in expired:
+            del self._tg_msg_to_notif[k]
+        while len(self._tg_msg_to_notif) >= _MSG_MAP_MAX:
+            self._tg_msg_to_notif.pop(next(iter(self._tg_msg_to_notif)))
 
 
 def main() -> None:

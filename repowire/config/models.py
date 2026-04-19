@@ -160,6 +160,7 @@ class TelegramConfig(BaseModel):
 
     bot_token: str | None = Field(None, description="Telegram bot token")
     chat_id: str | None = Field(None, description="Telegram chat ID")
+    circle: str = Field("global", description="Circle the bot peer joins (default: global)")
 
 
 class SlackConfig(BaseModel):

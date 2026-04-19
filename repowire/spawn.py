@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,6 +11,14 @@ import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
 from repowire.config.models import AgentType
+
+
+def _tmux_server() -> libtmux.Server:
+    """Build libtmux.Server honoring REPOWIRE_TMUX_SOCKET env var."""
+    socket_name = os.environ.get("REPOWIRE_TMUX_SOCKET") or None
+    if socket_name:
+        return libtmux.Server(socket_name=socket_name)
+    return libtmux.Server()
 
 # Default commands for each agent type
 AGENT_COMMANDS: dict[AgentType, str] = {
@@ -58,7 +67,7 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
         ValueError: If agent type is unknown
         RuntimeError: If tmux operations fail
     """
-    server = libtmux.Server()
+    server = _tmux_server()
     display_name = config.display_name
 
     # Get or create session (circle = tmux session name)
@@ -126,8 +135,13 @@ def attach_session(tmux_session: str) -> None:
     else:
         target = tmux_session
 
-    subprocess.run(["tmux", "select-window", "-t", target], check=False)
-    subprocess.run(["tmux", "attach-session", "-t", target.split(":")[0]], check=True)
+    socket_args = []
+    socket_name = os.environ.get("REPOWIRE_TMUX_SOCKET")
+    if socket_name:
+        socket_args = ["-L", socket_name]
+
+    subprocess.run(["tmux", *socket_args, "select-window", "-t", target], check=False)
+    subprocess.run(["tmux", *socket_args, "attach-session", "-t", target.split(":")[0]], check=True)
 
 
 def kill_peer(tmux_session: str) -> bool:
@@ -136,7 +150,7 @@ def kill_peer(tmux_session: str) -> bool:
         return False
 
     session_name, window_name = tmux_session.split(":", 1)
-    server = libtmux.Server()
+    server = _tmux_server()
 
     try:
         session = server.sessions.get(session_name=session_name)
