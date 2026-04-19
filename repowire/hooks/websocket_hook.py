@@ -41,6 +41,16 @@ class PaneUnsafeError(RuntimeError):
     """Raised when the pane no longer belongs to the expected live agent."""
 
 
+def _resolve_agent_path() -> str:
+    """Return the identity path for daemon registration.
+
+    Prefers REPOWIRE_AGENT_PATH (set by spawn-claude.sh to AGENTS_DIR) so that
+    worker CWD = worktree (D7) does not change the derived display_name.
+    Falls back to os.getcwd() for manual / legacy invocations.
+    """
+    return os.environ.get("REPOWIRE_AGENT_PATH") or str(os.getcwd())
+
+
 def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
     """Append a correlation_id to the pending file for a pane.
 
@@ -254,7 +264,7 @@ async def main() -> int:
         backend = AgentType(backend_str)
     except ValueError:
         backend = AgentType.CLAUDE_CODE
-    path = str(os.getcwd())
+    path = _resolve_agent_path()
 
     # Snapshot pane command at startup to detect pane reuse
     global _expected_command
