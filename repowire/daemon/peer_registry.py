@@ -317,6 +317,27 @@ class PeerRegistry:
             candidate = f"{folder}-{suffix}-{backend.value}"
             suffix += 1
 
+    def _peek_mapping_role(
+        self, path: str | None, circle: str, backend: AgentType,
+    ) -> PeerRole | None:
+        """Look up the stored role for this path's natural display_name before
+        ``_build_display_name`` gets a chance to prune orphan mappings.
+
+        Returns None when no mapping exists yet. Must hold lock.
+        """
+        if not path:
+            return None
+        folder = self._sanitize_folder_name(Path(path).name)
+        base_name = f"{folder}-{backend.value}"
+        for mapping in self._mappings.values():
+            if (
+                mapping.display_name == base_name
+                and mapping.circle == circle
+                and mapping.backend == backend
+            ):
+                return mapping.role
+        return None
+
     def _prune_name_from_mappings(
         self, display_name: str, circle: str, backend: AgentType,
     ) -> None:
@@ -336,11 +357,17 @@ class PeerRegistry:
         circle: str,
         backend: AgentType,
         path: str | None = None,
-        role: PeerRole = PeerRole.AGENT,
+        role: PeerRole | None = None,
     ) -> str:
         """Find existing mapping or allocate a new session_id. Must hold lock.
 
         Returns the session_id (existing or new).
+
+        ``role=None`` means "caller didn't specify". On reuse, the stored role
+        is preserved rather than overwritten with a default (which would
+        otherwise silently demote orchestrator/service peers whose hooks
+        reconnect without sending role). On fresh allocation, the default
+        AGENT is applied.
         """
         for sid, mapping in self._mappings.items():
             if (
@@ -349,12 +376,12 @@ class PeerRegistry:
                 and mapping.backend == backend
             ):
                 mapping.path = path
-                # Refresh role too: a peer whose first registration predated
-                # env-var-based role propagation (e.g. spawn-claude.sh prior to
-                # exporting REPOWIRE_PEER_ROLE) would otherwise keep the stale
-                # default AGENT across every daemon restart, which breaks
-                # cross-circle bypass for orchestrator/service peers.
-                mapping.role = role
+                # Only refresh role when the caller actually supplied one.
+                # Old websocket_hook processes reconnect without role; in
+                # that case we must keep the historical role rather than
+                # force-default it to AGENT.
+                if role is not None:
+                    mapping.role = role
                 mapping.updated_at = datetime.now(timezone.utc).isoformat()
                 logger.info(f"Reusing session {sid} for {display_name}@{circle}")
                 self._mappings_dirty = True
@@ -367,7 +394,7 @@ class PeerRegistry:
             circle=circle,
             backend=backend,
             path=path,
-            role=role,
+            role=role if role is not None else PeerRole.AGENT,
         )
         logger.info(f"Created session {session_id} for {display_name}@{circle}")
         self._mappings_dirty = True
@@ -398,7 +425,7 @@ class PeerRegistry:
         tmux_session: str | None = None,
         metadata: dict | None = None,
         machine: str = "unknown",
-        role: PeerRole = PeerRole.AGENT,
+        role: PeerRole | None = None,
         peer_id: str | None = None,
     ) -> tuple[str, str]:
         """Allocate a peer_id and register the peer atomically.
@@ -409,6 +436,12 @@ class PeerRegistry:
 
         If ``peer_id`` is provided and matches an existing peer, the peer is
         taken over in-place (WebSocket reconnect after HTTP pre-registration).
+
+        ``role=None`` means the caller did not specify a role (e.g. an older
+        websocket_hook that predates role propagation). In that case the
+        stored role is preserved rather than overwritten with a default —
+        historically that default forced AGENT and silently demoted
+        orchestrator/service peers on every reconnect.
         """
         async with self._lock:
             # Reconnect: if caller provides a peer_id that exists, take over
@@ -416,12 +449,11 @@ class PeerRegistry:
                 existing = self._peers[peer_id]
                 existing.status = PeerStatus.ONLINE
                 existing.last_seen = datetime.now(timezone.utc)
-                # Role may have changed since the first registration (e.g.
-                # spawn-claude.sh started exporting REPOWIRE_PEER_ROLE after
-                # an upgrade, so the stored peer still carries the stale
-                # default AGENT). Refresh it from the reconnect payload so
-                # circle-bypass reflects current caller intent.
-                existing.role = role
+                # Only refresh role when the caller actually provided one.
+                # Old hooks may reconnect without sending role; preserving
+                # the stored role avoids silently demoting them to AGENT.
+                if role is not None:
+                    existing.role = role
                 if pane_id:
                     self._release_pane(pane_id, peer_id)
                     existing.pane_id = pane_id
@@ -432,13 +464,23 @@ class PeerRegistry:
                 logger.info(f"Peer reconnected: {existing.display_name} ({peer_id})")
                 return peer_id, existing.display_name
 
-            # Fresh registration: daemon owns the name
+            # Fresh registration: daemon owns the name. Before building the
+            # name (which may prune orphan mappings as part of name-reclaim),
+            # capture the stored role for the path's natural display_name so
+            # a caller that didn't supply role falls back on history rather
+            # than AGENT. Without this, the first post-restart reconnect for
+            # an old hook would silently demote orchestrator/service peers.
+            preserved_role = self._peek_mapping_role(path, circle, backend)
+
             assigned_name = self._build_display_name(path or "", circle, backend)
+            effective_role_for_mapping = role if role is not None else preserved_role
             allocated_id = self._find_or_allocate_mapping(
-                assigned_name, circle, backend, path, role=role,
+                assigned_name, circle, backend, path, role=effective_role_for_mapping,
             )
             if pane_id:
                 self._release_pane(pane_id, allocated_id)
+
+            effective_role = effective_role_for_mapping if effective_role_for_mapping is not None else self._mappings[allocated_id].role
 
             # --- create and insert Peer ---
             peer = Peer(
@@ -446,7 +488,7 @@ class PeerRegistry:
                 display_name=assigned_name,
                 circle=circle,
                 backend=backend,
-                role=role,
+                role=effective_role,
                 status=PeerStatus.ONLINE,
                 last_seen=datetime.now(timezone.utc),
                 pane_id=pane_id,
@@ -784,6 +826,26 @@ class PeerRegistry:
                 return False
             peer.description = description
             peer.last_seen = datetime.now(timezone.utc)
+            return True
+
+    async def update_peer_role(self, identifier: str, role: PeerRole) -> bool:
+        """Update peer's role out-of-band (both in-memory Peer AND mapping).
+
+        Needed for operator hot-fix when a long-running hook is on an older
+        build that doesn't advertise role on reconnect. Returns True if the
+        peer was found.
+        """
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(identifier)
+            if not peer:
+                return False
+            peer.role = role
+            mapping = self._mappings.get(peer.peer_id)
+            if mapping:
+                mapping.role = role
+                mapping.updated_at = datetime.now(timezone.utc).isoformat()
+                self._mappings_dirty = True
+            logger.info(f"Peer {peer.display_name} role set to {role.value}")
             return True
 
     async def set_peer_circle(self, identifier: str, circle: str) -> None:
