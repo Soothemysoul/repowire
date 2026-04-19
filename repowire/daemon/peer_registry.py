@@ -274,6 +274,13 @@ class PeerRegistry:
         """Delegate to shared sanitize_folder_name from repowire.naming."""
         return sanitize_folder_name(name)
 
+    def _is_singleton_role(self, path: str | None) -> bool:
+        """Return True if the role derived from path basename is in singleton_roles config."""
+        if not path:
+            return False
+        role = sanitize_folder_name(Path(path).name)
+        return role in self._config.daemon.spawn.singleton_roles
+
     def _build_display_name(
         self, path: str, circle: str, backend: AgentType,
     ) -> str:
@@ -281,6 +288,10 @@ class PeerRegistry:
 
         Format: {folder}-{backend}[-{suffix}]
         Prunes offline peers that hold a conflicting name (clean takeover).
+
+        For singleton roles, raises ValueError if an ONLINE peer already holds
+        the base name — the caller (WS handler) must reject the connection with
+        close code 4009 instead of silently minting a '-2' duplicate.
         """
         base = build_base_display_name(path or None, backend)
         folder = sanitize_folder_name(Path(path).name) if path else "peer"
@@ -307,7 +318,13 @@ class PeerRegistry:
                 logger.info(f"Pruned offline peer {candidate} ({sid}) for name reclaim")
                 return candidate
 
-            # Name held by an active peer -- try next suffix
+            # Singleton roles must never get a '-2' suffix — reject instead.
+            if self._is_singleton_role(path):
+                raise ValueError(
+                    f"Singleton role already online: {candidate}@{circle}"
+                )
+
+            # Name held by an active non-singleton peer -- try next suffix
             candidate = f"{folder}-{suffix}-{backend.value}"
             suffix += 1
 

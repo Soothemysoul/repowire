@@ -142,16 +142,22 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # If the client provides a peer_id (ws-hook reconnecting after HTTP
         # pre-registration), the daemon takes over the existing peer.
         claimed_peer_id = data.get("peer_id")
-        peer_id, assigned_name = await peer_registry.allocate_and_register(
-            circle=circle,
-            backend=backend,
-            path=path,
-            pane_id=pane_id,
-            tmux_session=tmux_session,
-            machine=os.environ.get("HOSTNAME", "unknown"),
-            role=role,
-            peer_id=claimed_peer_id,
-        )
+        try:
+            peer_id, assigned_name = await peer_registry.allocate_and_register(
+                circle=circle,
+                backend=backend,
+                path=path,
+                pane_id=pane_id,
+                tmux_session=tmux_session,
+                machine=os.environ.get("HOSTNAME", "unknown"),
+                role=role,
+                peer_id=claimed_peer_id,
+            )
+        except ValueError as exc:
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            await websocket.close(code=4009, reason="Singleton role already online")
+            logger.warning(f"WebSocket rejected (singleton conflict): {exc}")
+            return
         peer_registry._fire_spawn_event(assigned_name)
         session_id = peer_id
 
