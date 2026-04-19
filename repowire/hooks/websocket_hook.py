@@ -281,6 +281,11 @@ async def main() -> int:
                     "backend": backend,
                     "path": path,
                     "pane_id": pane_id,
+                    # Without this, the daemon's WS handler defaults role to
+                    # AGENT on every reconnect, overwriting whatever role the
+                    # peer originally registered with (session_handler.py
+                    # pre-registers via HTTP /peers with the env-var role).
+                    "role": os.environ.get("REPOWIRE_PEER_ROLE", "agent"),
                 }
                 peer_id = os.environ.get("REPOWIRE_PEER_ID")
                 if peer_id:
