@@ -98,9 +98,12 @@ class TestSessionMain:
         },
     )
     @patch("repowire.hooks.session_handler.subprocess.Popen")
+    @patch.dict("os.environ", {}, clear=False)
     def test_session_start_registers(
         self, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path,
     ):
+        import os as _os
+        _os.environ.pop("REPOWIRE_AGENT_PATH", None)
         with patch("repowire.config.models.CACHE_DIR", tmp_path):
             result = _run_with_input({
                 "hook_event_name": "SessionStart",

@@ -490,17 +490,21 @@ class TestMcpRegistration:
             {"display_name": "repowire-codex"},
         ]
 
-        with patch.dict("repowire.mcp.server.os.environ", {"PATH": "/tmp/.codex/bin"}):
+        import os as _os
+        env_override = {"PATH": "/tmp/.codex/bin"}
+        with patch.dict("os.environ", env_override, clear=False):
+            _os.environ.pop("REPOWIRE_AGENT_PATH", None)
             await mcp_server._ensure_registered()
 
         assert mock_request.await_count == 2
         assert mock_request.await_args_list[0].args == ("GET", "/peers/by-pane/%251")
+        _expected_path = str(mcp_server.Path.cwd())
         assert mock_request.await_args_list[1].args == (
             "POST",
             "/peers",
             {
-                "name": "repowire",
-                "path": str(mcp_server.Path.cwd()),
+                "name": mcp_server.Path(_expected_path).name,
+                "path": _expected_path,
                 "circle": "0",
                 "backend": "codex",
                 "pane_id": "%1",

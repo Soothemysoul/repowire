@@ -21,6 +21,7 @@ except ImportError as e:
     sys.exit(1)
 
 from repowire.config.models import AgentType
+from repowire.hooks._identity import resolve_agent_path
 from repowire.hooks._tmux import get_tmux_info
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
@@ -40,15 +41,6 @@ _expected_command: str | None = None
 class PaneUnsafeError(RuntimeError):
     """Raised when the pane no longer belongs to the expected live agent."""
 
-
-def _resolve_agent_path() -> str:
-    """Return the identity path for daemon registration.
-
-    Prefers REPOWIRE_AGENT_PATH (set by spawn-claude.sh to AGENTS_DIR) so that
-    worker CWD = worktree (D7) does not change the derived display_name.
-    Falls back to os.getcwd() for manual / legacy invocations.
-    """
-    return os.environ.get("REPOWIRE_AGENT_PATH") or str(os.getcwd())
 
 
 def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
@@ -264,7 +256,7 @@ async def main() -> int:
         backend = AgentType(backend_str)
     except ValueError:
         backend = AgentType.CLAUDE_CODE
-    path = _resolve_agent_path()
+    path = resolve_agent_path()
 
     # Snapshot pane command at startup to detect pane reuse
     global _expected_command
