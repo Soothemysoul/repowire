@@ -11,6 +11,7 @@ import libtmux
 from libtmux.exc import LibTmuxException, ObjectDoesNotExist
 
 from repowire.config.models import AgentType
+from repowire.naming import build_base_display_name
 
 
 def _tmux_server() -> libtmux.Server:
@@ -96,7 +97,7 @@ def spawn_peer(config: SpawnConfig) -> SpawnResult:
     tmux_session = f"{config.circle}:{window_name}"
 
     return SpawnResult(
-        display_name=window_name,
+        display_name=build_base_display_name(config.path, config.backend),
         tmux_session=tmux_session,
     )
 
