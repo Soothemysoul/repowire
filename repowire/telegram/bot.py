@@ -16,6 +16,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlunparse
@@ -29,6 +30,10 @@ from repowire.config.models import DEFAULT_DAEMON_URL
 logger = logging.getLogger(__name__)
 
 _MD_ESCAPE_RE = re.compile(r"([_*\[\]()~`>#+=|{}.!\-])")
+_NOTIF_ID_RE = re.compile(r"\[#(notif-[0-9a-f]+)\]")
+
+_MSG_MAP_MAX = 1000   # max entries in reply-context map
+_MSG_MAP_TTL = 86400  # 24 h in seconds
 
 
 def _esc(text: str) -> str:
@@ -85,6 +90,8 @@ class TelegramPeer:
         self._tg_offset = 0
         self._reply_target: str | None = None  # peer to send next message to
         self._task: asyncio.Task[None] | None = None
+        # key: tg_msg_id; value: {from_peer, text, notif_id, ts}; TTL 24h + cap 1000
+        self._tg_msg_to_notif: dict[int, dict] = {}
 
     async def _run(self) -> None:
         await asyncio.gather(self._ws_loop(), self._poll_loop())
@@ -150,7 +157,16 @@ class TelegramPeer:
         text = msg.get("text", "")
 
         if t == "notify":
-            await self._tg_send(f"*@{_esc(who)}*\n{_esc(text)}")
+            msg_id = await self._tg_send(f"*@{_esc(who)}*\n{_esc(text)}")
+            if msg_id is not None:
+                m = _NOTIF_ID_RE.search(text)
+                self._trim_msg_map()
+                self._tg_msg_to_notif[msg_id] = {
+                    "from_peer": who,
+                    "text": text,
+                    "notif_id": m.group(1) if m else None,
+                    "ts": time.time(),
+                }
         elif t == "query":
             await self._tg_send(f"❓ *@{_esc(who)}*\n{_esc(text)}")
         elif t == "broadcast":
@@ -213,7 +229,18 @@ class TelegramPeer:
         # Text
         text = m.get("text", "")
         if text:
-            await self._on_text(text.strip(), message_id=m.get("message_id"))
+            text = text.strip()
+            reply = m.get("reply_to_message")
+            if reply:
+                ctx = self._tg_msg_to_notif.get(reply.get("message_id"))
+                if ctx and (time.time() - ctx["ts"]) < _MSG_MAP_TTL:
+                    excerpt = ctx["text"][:120].replace("\n", " ")
+                    ellipsis = "..." if len(ctx["text"]) > 120 else ""
+                    text = (
+                        f'[reply to @{ctx["from_peer"]} {ctx["notif_id"] or ""}: '
+                        f'"{excerpt}{ellipsis}"]\n{text}'
+                    )
+            await self._on_text(text, message_id=m.get("message_id"))
 
     async def _on_callback(self, cb: dict) -> None:
         data = cb.get("data", "")
@@ -526,7 +553,8 @@ class TelegramPeer:
         except Exception:
             logger.warning("Telegram react failed", exc_info=True)
 
-    async def _tg_send(self, text: str, markup: dict | None = None) -> None:
+    async def _tg_send(self, text: str, markup: dict | None = None) -> int | None:
+        """Send a message and return the Telegram message_id, or None on failure."""
         try:
             payload: dict[str, Any] = {
                 "chat_id": self._chat_id,
@@ -535,9 +563,20 @@ class TelegramPeer:
             }
             if markup:
                 payload["reply_markup"] = markup
-            await self._http.post(f"{self._bot_path}/sendMessage", json=payload)
+            r = await self._http.post(f"{self._bot_path}/sendMessage", json=payload)
+            return r.json().get("result", {}).get("message_id")
         except Exception:
             logger.warning("Telegram send failed", exc_info=True)
+            return None
+
+    def _trim_msg_map(self) -> None:
+        """Remove expired entries (TTL) and enforce cap (oldest first)."""
+        now = time.time()
+        expired = [k for k, v in self._tg_msg_to_notif.items() if now - v["ts"] > _MSG_MAP_TTL]
+        for k in expired:
+            del self._tg_msg_to_notif[k]
+        while len(self._tg_msg_to_notif) >= _MSG_MAP_MAX:
+            self._tg_msg_to_notif.pop(next(iter(self._tg_msg_to_notif)))
 
 
 def main() -> None:
