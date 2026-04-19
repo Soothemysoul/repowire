@@ -7,3 +7,4 @@
 - [Tmux must stay optional](project_tmux_optional.md) — tmux is a removable adapter, never a core dependency; may be dropped entirely
 - [Lifecycle hooks architecture](project_lifecycle_hooks.md) — provider-agnostic /hooks/lifecycle/* endpoints, tmux hooks via set-hook -g
 - [Pane takeover semantics](project_pane_takeover.md) — same-pane restarts are fresh takeovers; clear pane state and dedupe Codex tmux registration
+- [tmux copy-mode notification loss](tmux_copy_mode_notification_loss.md) — user scroll enters copy-mode; `send-keys -X cancel` before `-l` fixes intercept (beads-xak)
