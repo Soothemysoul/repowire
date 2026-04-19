@@ -349,6 +349,12 @@ class PeerRegistry:
                 and mapping.backend == backend
             ):
                 mapping.path = path
+                # Refresh role too: a peer whose first registration predated
+                # env-var-based role propagation (e.g. spawn-claude.sh prior to
+                # exporting REPOWIRE_PEER_ROLE) would otherwise keep the stale
+                # default AGENT across every daemon restart, which breaks
+                # cross-circle bypass for orchestrator/service peers.
+                mapping.role = role
                 mapping.updated_at = datetime.now(timezone.utc).isoformat()
                 logger.info(f"Reusing session {sid} for {display_name}@{circle}")
                 self._mappings_dirty = True
