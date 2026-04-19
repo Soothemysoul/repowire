@@ -1,13 +1,12 @@
 """Regression: _tmux_send_keys exits copy-mode before injecting text (beads-xak)."""
+import subprocess
 from unittest.mock import call, patch
 
-from repowire.hooks.websocket_hook import _tmux_send_keys
+from repowire.hooks.websocket_hook import _tmux_send_keys, _wait_for_normal_mode
 
 
 def _make_run(returncode=0, stdout=""):
     """Return a mock subprocess.run result."""
-    import subprocess
-
     result = subprocess.CompletedProcess(args=[], returncode=returncode)
     result.stdout = stdout
     return result
@@ -53,3 +52,62 @@ def test_normal_mode_still_sends_text_and_enter():
     assert any("-l" in c for c in cmds), "literal send-keys required"
     assert any("Enter" in c for c in cmds), "Enter required"
     assert any("Escape" in c for c in cmds), "Escape required"
+
+
+def test_timing_race_waits_for_copy_mode_exit():
+    """Regression beads-xak: tmux processes cancel async — poll pane_in_mode=0 before -l.
+
+    Simulates pane still in copy-mode for 2 polls after cancel, then exits.
+    Verifies that display-message is called between cancel and -l, and that
+    -l is only issued after pane_in_mode reaches 0.
+    """
+    call_log: list[list[str]] = []
+    pane_in_mode_calls = 0
+
+    def _fake_run(cmd, **kwargs):
+        call_log.append(cmd)
+        if "display-message" in cmd and "#{pane_in_mode}" in cmd:
+            nonlocal pane_in_mode_calls
+            pane_in_mode_calls += 1
+            # First 2 calls: still in copy-mode; 3rd call: exited
+            stdout = "1" if pane_in_mode_calls <= 2 else "0"
+            result = subprocess.CompletedProcess(args=cmd, returncode=0)
+            result.stdout = stdout
+            return result
+        result = subprocess.CompletedProcess(args=cmd, returncode=0)
+        result.stdout = ""
+        return result
+
+    with patch("subprocess.run", side_effect=_fake_run), \
+         patch("time.sleep"):
+        success = _tmux_send_keys("%4", "f:T/dangerous-text")
+
+    assert success is True
+
+    cancel_idx = next(i for i, c in enumerate(call_log) if "-X" in c and "cancel" in c)
+    display_idxs = [i for i, c in enumerate(call_log) if "display-message" in c and "#{pane_in_mode}" in c]
+    literal_idx = next(i for i, c in enumerate(call_log) if "-l" in c)
+
+    assert display_idxs, "display-message must be called to poll pane_in_mode"
+    assert all(cancel_idx < idx for idx in display_idxs), "polling must happen after cancel"
+    assert all(idx < literal_idx for idx in display_idxs), "polling must complete before -l"
+    # Must have polled at least twice (mode was 1 for first two calls)
+    assert len(display_idxs) >= 3, "must retry until pane_in_mode=0"
+
+
+def test_wait_for_normal_mode_timeout_logs_warning(caplog):
+    """If pane stays in copy-mode past max_retries, log a warning and return."""
+    import logging
+
+    def _always_in_mode(cmd, **kwargs):
+        result = subprocess.CompletedProcess(args=cmd, returncode=0)
+        result.stdout = "1"  # always in copy-mode
+        return result
+
+    with patch("subprocess.run", side_effect=_always_in_mode), \
+         patch("time.sleep"), \
+         caplog.at_level(logging.WARNING, logger="repowire.hooks.websocket_hook"):
+        _wait_for_normal_mode("%5", max_retries=3, sleep_s=0.05)
+
+    assert any("copy-mode" in r.message for r in caplog.records), \
+        "must log a warning when copy-mode persists past timeout"
