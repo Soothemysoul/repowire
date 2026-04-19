@@ -410,6 +410,12 @@ class PeerRegistry:
                 existing = self._peers[peer_id]
                 existing.status = PeerStatus.ONLINE
                 existing.last_seen = datetime.now(timezone.utc)
+                # Role may have changed since the first registration (e.g.
+                # spawn-claude.sh started exporting REPOWIRE_PEER_ROLE after
+                # an upgrade, so the stored peer still carries the stale
+                # default AGENT). Refresh it from the reconnect payload so
+                # circle-bypass reflects current caller intent.
+                existing.role = role
                 if pane_id:
                     self._release_pane(pane_id, peer_id)
                     existing.pane_id = pane_id
