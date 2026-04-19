@@ -106,6 +106,22 @@ class PeerConfig(BaseModel):
         return f"legacy-{self.name}"
 
 
+DEFAULT_SINGLETON_ROLES: tuple[str, ...] = (
+    "backend-head",
+    "frontend-head",
+    "devops-head",
+    "qa-head",
+    "pm",
+    "project-init",
+)
+"""Role basenames that may only have one peer per (role, circle).
+
+Workers (backend-worker, frontend-worker, qa-worker, devops-worker) and
+service roles (librarian, brain-admin, telegram) are NOT in this list —
+multiple worker instances in parallel are intentional.
+"""
+
+
 class SpawnSettings(BaseModel):
     """Settings controlling which commands and paths agents are allowed to spawn into.
 
@@ -120,6 +136,14 @@ class SpawnSettings(BaseModel):
     allowed_paths: list[str] = Field(
         default_factory=list,
         description="Allowed root directories for spawned sessions (empty = spawn disabled)",
+    )
+    singleton_roles: list[str] = Field(
+        default_factory=lambda: list(DEFAULT_SINGLETON_ROLES),
+        description=(
+            "Role basenames (= Path(path).name) for which only one peer per (role, circle) "
+            "is allowed. Duplicate spawn requests return the existing peer instead of "
+            "launching a second process."
+        ),
     )
 
 
