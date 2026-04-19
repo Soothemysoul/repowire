@@ -26,13 +26,20 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from repowire.config.models import DEFAULT_DAEMON_URL
+from repowire.telegram.state import (
+    append_notif_entry,
+    load_state,
+    notif_map_to_dict,
+    save_state,
+    set_active_chat,
+)
 
 logger = logging.getLogger(__name__)
 
 _MD_ESCAPE_RE = re.compile(r"([_*\[\]()~`>#+=|{}.!\-])")
 _NOTIF_ID_RE = re.compile(r"\[#(notif-[0-9a-f]+)\]")
 
-_MSG_MAP_MAX = 1000   # max entries in reply-context map
+_MSG_MAP_MAX = 1000   # max entries in reply-context map (runtime in-memory)
 _MSG_MAP_TTL = 86400  # 24 h in seconds
 
 
@@ -78,6 +85,7 @@ class TelegramPeer:
         daemon_url: str = DEFAULT_DAEMON_URL,
         display_name: str = "telegram",
         circle: str = "default",
+        state_path: Path | None = None,
     ):
         self._chat_id = chat_id
         self._daemon_url = daemon_url.rstrip("/")
@@ -92,6 +100,25 @@ class TelegramPeer:
         self._task: asyncio.Task[None] | None = None
         # key: tg_msg_id; value: {from_peer, text, notif_id, ts}; TTL 24h + cap 1000
         self._tg_msg_to_notif: dict[int, dict] = {}
+        # Persistent state
+        self._state_path = state_path
+        self._notif_map_list: list[dict] = []  # persisted FIFO list
+        self._load_state()
+
+    def _load_state(self) -> None:
+        state = load_state(self._state_path)
+        chat = state["chats"].get(self._chat_id, {})
+        self._reply_target = chat.get("active_peer") or None
+        self._notif_map_list = state.get("notif_map", [])
+        # Populate runtime lookup dict from persisted list
+        self._tg_msg_to_notif = notif_map_to_dict(self._notif_map_list)
+        if self._reply_target:
+            logger.info("Restored active peer for chat %s: %s", self._chat_id, self._reply_target)
+        if self._tg_msg_to_notif:
+            logger.info("Restored %d notif-map entries", len(self._tg_msg_to_notif))
+
+    def _persist_state(self, chats: dict) -> None:
+        save_state({"chats": chats, "notif_map": self._notif_map_list}, self._state_path)
 
     async def _run(self) -> None:
         await asyncio.gather(self._ws_loop(), self._poll_loop())
@@ -160,13 +187,20 @@ class TelegramPeer:
             msg_id = await self._tg_send(f"*@{_esc(who)}*\n{_esc(text)}")
             if msg_id is not None:
                 m = _NOTIF_ID_RE.search(text)
+                notif_id = m.group(1) if m else None
                 self._trim_msg_map()
                 self._tg_msg_to_notif[msg_id] = {
                     "from_peer": who,
                     "text": text,
-                    "notif_id": m.group(1) if m else None,
+                    "notif_id": notif_id,
                     "ts": time.time(),
                 }
+                # Persist notif_map (bounded 200 entries FIFO)
+                self._notif_map_list = append_notif_entry(
+                    self._notif_map_list, msg_id, notif_id, who, text
+                )
+                state = load_state(self._state_path)
+                self._persist_state(state["chats"])
         elif t == "query":
             await self._tg_send(f"❓ *@{_esc(who)}*\n{_esc(text)}")
         elif t == "broadcast":
@@ -252,6 +286,9 @@ class TelegramPeer:
         if data.startswith(("target:", "notify:")):
             peer = data.split(":", 1)[1]
             self._reply_target = peer
+            state = load_state(self._state_path)
+            updated_chats = set_active_chat(state["chats"], self._chat_id, peer)
+            self._persist_state(updated_chats)
             await self._tg_send(
                 f"Now talking to *@{_esc(peer)}*\\. All messages go there\\.",
                 _kb([[("📋 Peers", "peers"), ("❌ Clear", "cancel")]]),
@@ -274,6 +311,9 @@ class TelegramPeer:
         if text.startswith("/switch ") or text.startswith("/select "):
             peer = text.split(maxsplit=1)[1].strip().lstrip("@")
             self._reply_target = peer
+            state = load_state(self._state_path)
+            updated_chats = set_active_chat(state["chats"], self._chat_id, peer)
+            self._persist_state(updated_chats)
             await self._tg_send(
                 f"Now talking to *@{_esc(peer)}*\\. All messages go there\\.",
                 _kb([[("📋 Peers", "peers"), ("❌ Clear", "cancel")]]),

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -16,7 +17,13 @@ from repowire.telegram.bot import (
 
 
 def _make_peer() -> TelegramPeer:
-    return TelegramPeer(bot_token="0:fake", chat_id="123", daemon_url="http://127.0.0.1:8377")
+    # Use non-existent path so _load_state() always returns empty (test isolation).
+    return TelegramPeer(
+        bot_token="0:fake",
+        chat_id="123",
+        daemon_url="http://127.0.0.1:8377",
+        state_path=Path("/nonexistent/telegram-state.json"),
+    )
 
 
 def _http_response(json_payload: dict, status_code: int = 200) -> SimpleNamespace:
