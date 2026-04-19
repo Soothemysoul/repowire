@@ -68,12 +68,19 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
     """Send keys to a tmux pane via subprocess.
 
     Implements Gastown's battle-tested NudgeSession pattern:
+    0. Exit copy-mode if active (send-keys -X cancel is a no-op outside copy-mode)
     1. Send text in literal mode (bracketed paste)
     2. 500ms debounce — tested, required for paste to complete
     3. Escape — exits vim INSERT mode if active, harmless otherwise
     4. Enter — submits
     """
     try:
+        # Unconditional cancel: no-op when pane is in normal mode, exits copy-mode
+        # when active. Simpler and more reliable than probing #{pane_in_mode} first.
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
+            capture_output=True,
+        )
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "-l", text],
             capture_output=True,
