@@ -64,11 +64,37 @@ def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
 
+def _wait_for_normal_mode(pane_id: str, max_retries: int = 20, sleep_s: float = 0.05) -> None:
+    """Poll until pane exits copy-mode or timeout.
+
+    Needed because tmux processes 'send-keys -X cancel' asynchronously — the pane
+    may still report pane_in_mode=1 for a brief window after cancel is sent.
+    Without this wait, the immediately following 'send-keys -l' arrives while
+    copy-mode is still active and its characters are interpreted as vi commands
+    (f=jump, t=jump-to, :=goto-line, /=search …) instead of literal input.
+    """
+    for _ in range(max_retries):
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_in_mode}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or result.stdout.strip() == "0":
+            return
+        time.sleep(sleep_s)
+    logger.warning(
+        "Pane %s still in copy-mode after %.1fs, injecting anyway",
+        pane_id,
+        max_retries * sleep_s,
+    )
+
+
 def _tmux_send_keys(pane_id: str, text: str) -> bool:
     """Send keys to a tmux pane via subprocess.
 
     Implements Gastown's battle-tested NudgeSession pattern:
     0. Exit copy-mode if active (send-keys -X cancel is a no-op outside copy-mode)
+    0a. Wait until pane_in_mode=0 — tmux processes cancel asynchronously
     1. Send text in literal mode (bracketed paste)
     2. 500ms debounce — tested, required for paste to complete
     3. Escape — exits vim INSERT mode if active, harmless otherwise
@@ -81,6 +107,8 @@ def _tmux_send_keys(pane_id: str, text: str) -> bool:
             ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
             capture_output=True,
         )
+        # tmux processes cancel asynchronously; poll until mode cleared before inject.
+        _wait_for_normal_mode(pane_id)
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "-l", text],
             capture_output=True,
