@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
+from repowire.naming import build_base_display_name, sanitize_folder_name
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 if TYPE_CHECKING:
@@ -270,15 +271,8 @@ class PeerRegistry:
 
     @staticmethod
     def _sanitize_folder_name(name: str) -> str:
-        """Sanitize a folder name for use in display_name.
-
-        Replaces characters not matching [a-zA-Z0-9._-] with hyphens,
-        collapses runs, strips leading/trailing hyphens.
-        """
-        sanitized = re.sub(r"[^a-zA-Z0-9._-]", "-", name)
-        sanitized = re.sub(r"-{2,}", "-", sanitized)
-        sanitized = sanitized.strip("-")
-        return sanitized or "peer"
+        """Delegate to shared sanitize_folder_name from repowire.naming."""
+        return sanitize_folder_name(name)
 
     def _build_display_name(
         self, path: str, circle: str, backend: AgentType,
@@ -288,8 +282,8 @@ class PeerRegistry:
         Format: {folder}-{backend}[-{suffix}]
         Prunes offline peers that hold a conflicting name (clean takeover).
         """
-        folder = self._sanitize_folder_name(Path(path).name) if path else "peer"
-        base = f"{folder}-{backend.value}"
+        base = build_base_display_name(path or None, backend)
+        folder = sanitize_folder_name(Path(path).name) if path else "peer"
 
         candidate = base
         suffix = 2
@@ -327,8 +321,7 @@ class PeerRegistry:
         """
         if not path:
             return None
-        folder = self._sanitize_folder_name(Path(path).name)
-        base_name = f"{folder}-{backend.value}"
+        base_name = build_base_display_name(path, backend)
         for mapping in self._mappings.values():
             if (
                 mapping.display_name == base_name

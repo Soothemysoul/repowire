@@ -189,7 +189,7 @@ class TestSpawnPeer:
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
         result = spawn_peer(config)
 
-        assert result.display_name == "test"
+        assert result.display_name == "test-claude-code"
         assert result.tmux_session == "dev:test"
         mock_pane.send_keys.assert_called_once_with("claude", enter=True)
 
@@ -329,7 +329,7 @@ class TestSpawnPeer:
         config = SpawnConfig(path="/tmp/test", circle="dev", backend="claude-code")
         result = spawn_peer(config)
 
-        assert result.display_name == "test-2"
+        assert result.display_name == "test-claude-code"
         assert result.tmux_session == "dev:test-2"
 
 
@@ -562,3 +562,229 @@ class TestTmuxServer:
             _tmux_server()
 
         mock_server_class.assert_called_once_with(socket_name="voice")
+
+
+class TestNaming:
+    """Tests for shared naming helpers (repowire.naming)."""
+
+    def test_sanitize_folder_name_basic(self) -> None:
+        from repowire.naming import sanitize_folder_name
+        assert sanitize_folder_name("qa-worker") == "qa-worker"
+
+    def test_sanitize_folder_name_spaces(self) -> None:
+        from repowire.naming import sanitize_folder_name
+        assert sanitize_folder_name("my project") == "my-project"
+
+    def test_sanitize_folder_name_collapses_hyphens(self) -> None:
+        from repowire.naming import sanitize_folder_name
+        assert sanitize_folder_name("my--project") == "my-project"
+
+    def test_sanitize_folder_name_strips_edges(self) -> None:
+        from repowire.naming import sanitize_folder_name
+        assert sanitize_folder_name("-project-") == "project"
+
+    def test_sanitize_folder_name_empty_fallback(self) -> None:
+        from repowire.naming import sanitize_folder_name
+        assert sanitize_folder_name("!!!") == "peer"
+
+    def test_build_base_display_name(self) -> None:
+        from repowire.config.models import AgentType
+        from repowire.naming import build_base_display_name
+        assert build_base_display_name("/home/user/qa-worker", AgentType.CLAUDE_CODE) == "qa-worker-claude-code"
+
+    def test_build_base_display_name_none_path(self) -> None:
+        from repowire.config.models import AgentType
+        from repowire.naming import build_base_display_name
+        assert build_base_display_name(None, AgentType.CLAUDE_CODE) == "peer-claude-code"
+
+
+class TestSpawnDisplayNameMatchesDaemon:
+    """Regression tests for beads-lyz: spawn_peer display_name must match daemon-assigned name.
+
+    Root cause: routes/spawn.py registered spawn waiter under the tmux window
+    name (e.g. 'qa-worker') while websocket.py fired the event under the daemon
+    display_name (e.g. 'qa-worker-claude-code'). Keys never matched → 408.
+    """
+
+    @patch("repowire.spawn._get_or_create_session")
+    @patch("repowire.spawn.libtmux.Server")
+    def test_spawn_peer_display_name_includes_backend_suffix(
+        self,
+        mock_server_class: MagicMock,
+        mock_get_session: MagicMock,
+    ) -> None:
+        """SpawnResult.display_name must include the backend suffix matching daemon format."""
+        mock_session = MagicMock()
+        mock_session.windows = []
+        mock_window = MagicMock()
+        mock_pane = MagicMock()
+        mock_pane.id = "%1"
+        mock_window.active_pane = mock_pane
+        mock_session.new_window.return_value = mock_window
+        mock_get_session.return_value = mock_session
+
+        from repowire.config.models import AgentType
+        config = SpawnConfig(path="/home/user/qa-worker", circle="default", backend=AgentType.CLAUDE_CODE)
+        result = spawn_peer(config)
+
+        assert result.display_name == "qa-worker-claude-code", (
+            "display_name must match daemon's _build_display_name output so that "
+            "register_spawn_waiter and _fire_spawn_event use the same key"
+        )
+
+    @patch("repowire.spawn._get_or_create_session")
+    @patch("repowire.spawn.libtmux.Server")
+    def test_spawn_display_name_consistent_across_5_spawns(
+        self,
+        mock_server_class: MagicMock,
+        mock_get_session: MagicMock,
+    ) -> None:
+        """5 consecutive spawns all produce consistent display_name (backend suffix present)."""
+        from repowire.config.models import AgentType
+
+        mock_session = MagicMock()
+        mock_session.windows = []
+        mock_window = MagicMock()
+        mock_pane = MagicMock()
+        mock_pane.id = "%1"
+        mock_window.active_pane = mock_pane
+        mock_session.new_window.return_value = mock_window
+        mock_get_session.return_value = mock_session
+
+        for _ in range(5):
+            config = SpawnConfig(path="/home/user/qa-worker", circle="default", backend=AgentType.CLAUDE_CODE)
+            result = spawn_peer(config)
+            assert result.display_name == "qa-worker-claude-code"
+
+
+class TestSpawnWaitForReadyNoFalseNegative:
+    """Integration regression for beads-lyz: wait_for_ready must not return 408 when peer connects."""
+
+    @pytest.mark.asyncio
+    async def test_register_and_fire_same_key(self) -> None:
+        """register_spawn_waiter and _fire_spawn_event must agree on the key."""
+        import asyncio
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from repowire.config.models import Config
+        from repowire.daemon.message_router import MessageRouter
+        from repowire.daemon.peer_registry import PeerRegistry
+        from repowire.daemon.query_tracker import QueryTracker
+        from repowire.daemon.websocket_transport import WebSocketTransport
+
+        cfg = Config()
+        transport = WebSocketTransport()
+        tracker = QueryTracker()
+        router = MessageRouter(transport=transport, query_tracker=tracker)
+
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = PeerRegistry(
+                config=cfg,
+                message_router=router,
+                query_tracker=tracker,
+                transport=transport,
+                persistence_path=Path(tmp) / "sessions.json",
+            )
+
+            # Simulate: spawn_peer returns display_name = "qa-worker-claude-code"
+            expected_name = "qa-worker-claude-code"
+            event = registry.register_spawn_waiter(expected_name)
+
+            # Simulate: WebSocket handler fires with daemon-assigned name
+            registry._fire_spawn_event(expected_name)
+
+            assert event.is_set(), (
+                "Event must be set — register_spawn_waiter and _fire_spawn_event "
+                "now use the same key, so wait_for_ready should not 408"
+            )
+
+    @pytest.mark.asyncio
+    async def test_wait_for_ready_returns_200_not_408(self, tmp_path) -> None:
+        """wait_for_ready=True must complete with 200 when spawn event fires in time."""
+        import asyncio
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch, AsyncMock
+
+        from fastapi import FastAPI
+        from httpx import ASGITransport, AsyncClient
+
+        from repowire.config.models import AgentType, Config
+        from repowire.daemon.deps import cleanup_deps, init_deps
+        from repowire.daemon.message_router import MessageRouter
+        from repowire.daemon.peer_registry import PeerRegistry
+        from repowire.daemon.query_tracker import QueryTracker
+        from repowire.daemon.routes import spawn as spawn_routes
+        from repowire.daemon.websocket_transport import WebSocketTransport
+        from repowire.spawn import SpawnConfig, SpawnResult
+
+        cfg = Config.model_validate({
+            "daemon": {
+                "spawn": {
+                    "allowed_commands": ["claude"],
+                    "allowed_paths": [str(tmp_path)],
+                }
+            }
+        })
+        transport = WebSocketTransport()
+        tracker = QueryTracker()
+        router = MessageRouter(transport=transport, query_tracker=tracker)
+        registry = PeerRegistry(
+            config=cfg,
+            message_router=router,
+            query_tracker=tracker,
+            transport=transport,
+            persistence_path=tmp_path / "sessions.json",
+        )
+        registry._events_path = tmp_path / "events.json"
+
+        app_state = SimpleNamespace(
+            config=cfg, transport=transport, query_tracker=tracker,
+            message_router=router, peer_registry=registry, relay_mode=False,
+        )
+        init_deps(cfg, registry, app_state)
+
+        app = FastAPI()
+        app.include_router(spawn_routes.router)
+
+        # Create a real path so validation passes
+        project_path = tmp_path / "qa-worker"
+        project_path.mkdir()
+
+        expected_display_name = "qa-worker-claude-code"
+
+        async def fake_spawn(path: str, command: str) -> None:
+            """Fire spawn event shortly after spawn_peer is called."""
+            await asyncio.sleep(0.05)
+            registry._fire_spawn_event(expected_display_name)
+
+        mock_result = SpawnResult(
+            display_name=expected_display_name,
+            tmux_session=f"default:qa-worker",
+        )
+
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                with patch("repowire.daemon.routes.spawn.spawn_peer", return_value=mock_result):
+                    # Fire the event concurrently, simulating peer connecting
+                    task = asyncio.create_task(fake_spawn(str(project_path), "claude"))
+                    r = await client.post("/spawn", json={
+                        "path": str(project_path),
+                        "command": "claude",
+                        "circle": "default",
+                        "wait_for_ready": True,
+                        "ready_timeout_ms": 5000,
+                    })
+                    await task
+
+            assert r.status_code == 200, (
+                f"Expected 200 but got {r.status_code}: {r.text}. "
+                "This is the beads-lyz regression: wait_for_ready must not 408 "
+                "when the peer connects in time."
+            )
+            assert r.json()["status"] == "online"
+        finally:
+            cleanup_deps()
