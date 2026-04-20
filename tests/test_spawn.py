@@ -13,6 +13,7 @@ from repowire.spawn import (
     _unique_window_name,
     attach_session,
     kill_peer,
+    kill_peer_by_pane,
     spawn_peer,
 )
 
@@ -385,6 +386,87 @@ class TestKillPeer:
 
         result = kill_peer("dev:frontend")
         assert result is False
+
+
+class TestKillPeerByPane:
+    """Tests for kill_peer_by_pane — stable pane-ID-based kill."""
+
+    @patch("repowire.spawn.libtmux.Server")
+    def test_kill_peer_by_pane_success(self, mock_server_class: MagicMock) -> None:
+        """kill_peer_by_pane returns True and kills the window when pane is found."""
+        mock_server = mock_server_class.return_value
+        mock_window = MagicMock()
+        mock_pane = MagicMock()
+        mock_pane.pane_id = "%42"
+        mock_window.panes = [mock_pane]
+        mock_session = MagicMock()
+        mock_session.windows = [mock_window]
+        mock_server.sessions = [mock_session]
+
+        result = kill_peer_by_pane("%42")
+
+        assert result is True
+        mock_window.kill.assert_called_once()
+
+    @patch("repowire.spawn.libtmux.Server")
+    def test_kill_peer_by_pane_not_found(self, mock_server_class: MagicMock) -> None:
+        """kill_peer_by_pane returns False when pane_id is not in any session."""
+        mock_server = mock_server_class.return_value
+        mock_pane = MagicMock()
+        mock_pane.pane_id = "%99"
+        mock_window = MagicMock()
+        mock_window.panes = [mock_pane]
+        mock_session = MagicMock()
+        mock_session.windows = [mock_window]
+        mock_server.sessions = [mock_session]
+
+        result = kill_peer_by_pane("%42")
+
+        assert result is False
+
+    @patch("repowire.spawn.libtmux.Server")
+    def test_kill_peer_by_pane_exception_returns_false(self, mock_server_class: MagicMock) -> None:
+        """kill_peer_by_pane returns False when libtmux raises."""
+        from libtmux.exc import LibTmuxException
+
+        mock_server = mock_server_class.return_value
+        mock_server.sessions = MagicMock(side_effect=LibTmuxException("boom"))
+
+        result = kill_peer_by_pane("%42")
+
+        assert result is False
+
+    @patch("repowire.spawn.libtmux.Server")
+    def test_kill_peer_by_pane_renamed_window(self, mock_server_class: MagicMock) -> None:
+        """kill_peer_by_pane finds the window even when its name was changed to an emoji."""
+        mock_server = mock_server_class.return_value
+        mock_window = MagicMock()
+        mock_window.window_name = "📦"  # renamed by spawn-claude.sh
+        mock_pane = MagicMock()
+        mock_pane.pane_id = "%7"
+        mock_window.panes = [mock_pane]
+        mock_session = MagicMock()
+        mock_session.windows = [mock_window]
+        mock_server.sessions = [mock_session]
+
+        result = kill_peer_by_pane("%7")
+
+        assert result is True
+        mock_window.kill.assert_called_once()
+
+    @patch("repowire.spawn.libtmux.Server")
+    def test_kill_peer_backcompat_tmux_session(self, mock_server_class: MagicMock) -> None:
+        """Legacy kill_peer(tmux_session) still works unchanged (back-compat)."""
+        mock_server = mock_server_class.return_value
+        mock_session = MagicMock()
+        mock_window = MagicMock()
+        mock_session.windows.get.return_value = mock_window
+        mock_server.sessions.get.return_value = mock_session
+
+        result = kill_peer("dev:frontend")
+
+        assert result is True
+        mock_window.kill.assert_called_once()
 
 
 class TestAttachSession:

@@ -166,3 +166,23 @@ def kill_peer(tmux_session: str) -> bool:
         return True
     except (LibTmuxException, ObjectDoesNotExist):
         return False
+
+
+def kill_peer_by_pane(pane_id: str) -> bool:
+    """Kill the tmux window that owns pane_id. Survives window renames.
+
+    Uses the stable pane ID (e.g. '%42') instead of the window name, which
+    spawn-claude.sh replaces with an emoji after startup.
+    Returns True if the window was found and killed.
+    """
+    server = _tmux_server()
+    try:
+        for session in server.sessions:
+            for window in session.windows:
+                for pane in window.panes:
+                    if pane.pane_id == pane_id:
+                        window.kill()
+                        return True
+        return False
+    except (LibTmuxException, ObjectDoesNotExist):
+        return False

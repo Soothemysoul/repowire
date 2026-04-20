@@ -392,17 +392,41 @@ def create_mcp_server() -> FastMCP:
         )
 
     @mcp.tool()
-    async def kill_peer(tmux_session: str) -> str:
+    async def kill_peer(
+        tmux_session: str | None = None,
+        peer_id: str | None = None,
+        peer_name: str | None = None,
+        circle: str | None = None,
+    ) -> str:
         """[Repowire mesh] Kill a spawned coding session.
 
+        Prefer peer_id or peer_name+circle — resolves via registry and uses
+        stable pane ID, so it works even after spawn-claude.sh renames the
+        tmux window to an emoji. tmux_session is kept for back-compat.
+
         Args:
-            tmux_session: Session reference returned by spawn_peer (e.g. "default:myproject")
+            tmux_session: Legacy session ref from spawn_peer (e.g. "default:myproject")
+            peer_id: Peer ID from list_peers() (e.g. "repow-project-x-a1b2c3d4")
+            peer_name: Peer display name (e.g. "devops-worker-claude-code")
+            circle: Circle to disambiguate peer_name lookup
 
         Returns:
             Confirmation message
         """
-        await daemon_request("POST", "/kill", {"tmux_session": tmux_session})
-        return f"Killed {tmux_session}"
+        if not (tmux_session or peer_id or peer_name):
+            raise ValueError("Provide tmux_session, peer_id, or peer_name")
+        body: dict = {}
+        if peer_id:
+            body["peer_id"] = peer_id
+        elif peer_name:
+            body["peer_name"] = peer_name
+            if circle:
+                body["circle"] = circle
+        else:
+            body["tmux_session"] = tmux_session
+        ref = peer_id or peer_name or tmux_session
+        await daemon_request("POST", "/kill", body)
+        return f"Killed {ref}"
 
     return mcp
 
