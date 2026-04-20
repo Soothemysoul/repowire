@@ -14,7 +14,7 @@ from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_config, get_peer_registry
 from repowire.naming import build_base_display_name
 from repowire.protocol.peers import PeerStatus
-from repowire.spawn import SpawnConfig, SpawnResult, kill_peer, spawn_peer
+from repowire.spawn import SpawnConfig, SpawnResult, kill_peer, kill_peer_by_pane, spawn_peer
 
 router = APIRouter(tags=["spawn"])
 
@@ -72,11 +72,18 @@ class SpawnResponse(BaseModel):
 
 
 class KillRequest(BaseModel):
-    """Request to kill a spawned session."""
+    """Request to kill a spawned session.
 
-    tmux_session: str = Field(
-        ..., description="Session ref returned by /spawn (e.g. 'default:myproject')"
+    Prefer peer_id or peer_name+circle for stable lookup (survives window
+    rename). tmux_session is kept for back-compat with existing callers.
+    """
+
+    tmux_session: str | None = Field(
+        None, description="Session ref returned by /spawn (e.g. 'default:myproject')"
     )
+    peer_id: str | None = Field(None, description="Peer ID for registry-based kill")
+    peer_name: str | None = Field(None, description="Peer display name for registry-based kill")
+    circle: str | None = Field(None, description="Circle to disambiguate peer_name")
 
 
 class KillResponse(BaseModel):
@@ -271,20 +278,49 @@ async def kill(
 ) -> KillResponse:
     """Kill a spawned agent session.
 
-    Only sessions previously spawned via /spawn on this daemon instance can be killed.
+    Accepts either peer_id / peer_name+circle (registry lookup, stable across
+    window renames) or legacy tmux_session (back-compat, only for sessions
+    spawned via /spawn on this instance).
     """
+    # Registry-based path: resolve peer → pane_id → kill by stable pane ref
+    if request.peer_id or request.peer_name:
+        peer_registry = get_peer_registry()
+        identifier = request.peer_id or request.peer_name
+        peer = await peer_registry.get_peer(identifier, circle=request.circle)
+        if peer is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Peer not found: {identifier}",
+            )
+        if not peer.pane_id:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Peer has no pane_id registered: {identifier}",
+            )
+        ok = kill_peer_by_pane(peer.pane_id)
+        if not ok:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Tmux pane not found for peer: {identifier}",
+            )
+        return KillResponse()
+
+    # Legacy tmux_session path — back-compat, behavior unchanged
+    if not request.tmux_session:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide tmux_session, peer_id, or peer_name",
+        )
     if request.tmux_session not in _spawned_sessions:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Session not found or not spawned by repowire: {request.tmux_session}",
         )
-
     ok = kill_peer(request.tmux_session)
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Tmux session not found: {request.tmux_session}",
         )
-
     _spawned_sessions.discard(request.tmux_session)
     return KillResponse()
