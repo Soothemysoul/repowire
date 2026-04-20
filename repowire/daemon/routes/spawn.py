@@ -222,7 +222,7 @@ async def spawn(
 
         # 1. Already online — return existing peer info, no spawn needed.
         existing = await peer_registry.get_peer(canonical_name, circle=request.circle)
-        if existing is not None and existing.status == PeerStatus.ONLINE:
+        if existing is not None and existing.status != PeerStatus.OFFLINE:
             return SpawnResponse(
                 display_name=existing.display_name,
                 tmux_session=existing.tmux_session or "",
