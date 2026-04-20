@@ -24,3 +24,7 @@ web/out/
 # Include prebuilt artefacts so `uv tool install git+...` works without local build step
 !web/out/
 .coverage
+
+# Local agent worktrees
+.worktrees/
+worktrees/
