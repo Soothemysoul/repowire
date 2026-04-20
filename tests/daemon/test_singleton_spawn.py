@@ -154,6 +154,56 @@ class TestSingletonSpawnDedup:
             cleanup_deps()
 
     @pytest.mark.asyncio
+    async def test_second_spawn_returns_existing_when_busy(self, tmp_path) -> None:
+        """Second /spawn for an already-BUSY singleton returns status='existing', no spawn."""
+        app, registry = _make_app(tmp_path)
+        project_path = tmp_path / "devops-head"
+        project_path.mkdir()
+
+        canonical_name = "devops-head-claude-code"
+        mock_result = SpawnResult(
+            display_name=canonical_name,
+            tmux_session="default:devops-head",
+        )
+
+        try:
+            async with AsyncClient(
+                transport=ASGITransport(app=app), base_url="http://test"
+            ) as client:
+                with patch("repowire.daemon.routes.spawn.spawn_peer", return_value=mock_result) as mock_spawn:
+                    # First spawn
+                    r1 = await client.post("/spawn", json={
+                        "path": str(project_path),
+                        "command": "claude",
+                        "circle": "default",
+                        "wait_for_ready": False,
+                    })
+                    assert r1.status_code == 200
+
+                    # Simulate peer coming online, then going BUSY
+                    peer_id, _ = await registry.allocate_and_register(
+                        circle="default",
+                        backend=AgentType.CLAUDE_CODE,
+                        path=str(project_path),
+                    )
+                    registry._peers[peer_id].status = PeerStatus.BUSY
+
+                    # Second spawn — should return existing, NOT call spawn_peer again
+                    r2 = await client.post("/spawn", json={
+                        "path": str(project_path),
+                        "command": "claude",
+                        "circle": "default",
+                        "wait_for_ready": False,
+                    })
+                    assert r2.status_code == 200
+                    data = r2.json()
+                    assert data["status"] == "existing"
+                    assert data["display_name"] == canonical_name
+                    assert mock_spawn.call_count == 1
+        finally:
+            cleanup_deps()
+
+    @pytest.mark.asyncio
     async def test_5_parallel_singleton_spawns_one_process(self, tmp_path) -> None:
         """5 concurrent spawn requests for a singleton role → exactly one real spawn."""
         app, registry = _make_app(tmp_path)
