@@ -307,6 +307,27 @@ class TestNotify:
         })
         assert r.status_code == 404
 
+    async def test_notify_peer_without_connection_returns_503(self, client):
+        # Register peer via HTTP — no WebSocket connection is ever opened,
+        # so transport.send() raises TransportError("No connection ...").
+        # The /notify handler must surface that as 503, not 500.
+        r = await client.post("/peers", json={
+            "name": "ghostpeer",
+            "path": "/tmp/ghostpeer",
+            "circle": "default",
+            "backend": "claude-code",
+        })
+        assert r.status_code == 200
+        name = r.json()["display_name"]
+
+        r = await client.post("/notify", json={
+            "from_peer": "sender",
+            "to_peer": name,
+            "text": "hello",
+        })
+        assert r.status_code == 503
+        assert "Peer unreachable" in r.json()["detail"]
+
 
 # -- Broadcast --
 

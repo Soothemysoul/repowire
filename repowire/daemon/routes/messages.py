@@ -14,6 +14,7 @@ from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
 from repowire.daemon.routes._shared import OkResponse
+from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import PeerRole, PeerStatus
 
 router = APIRouter(tags=["messages"])
@@ -155,6 +156,15 @@ async def notify_peer(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e),
+        )
+    except TransportError as e:
+        # Peer exists in registry but has no live WS connection (e.g. scope
+        # died without disconnect handler firing, or transient silent drop).
+        # Surface as 503 so MCP clients get a clean "peer unreachable" error
+        # instead of a generic 500 that looks like a daemon bug.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Peer unreachable: {e}",
         )
     except Exception as e:
         raise HTTPException(
