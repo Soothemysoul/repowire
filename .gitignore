@@ -28,3 +28,6 @@ web/out/
 # Local agent worktrees
 .worktrees/
 worktrees/
+
+# Graphify artefacts (never commit; can grow large and contain binary HTML/JSON)
+**/graphify-out/
