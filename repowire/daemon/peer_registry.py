@@ -33,6 +33,11 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# Stale role-sibling purge threshold: OFFLINE peers with matching role-stem
+# older than this are evicted on spawn to keep watchdog's substring-match
+# /peers query from aliasing them onto the fresh scope (beads-wcy).
+_STALE_SIBLING_PURGE_THRESHOLD_SEC = 300.0
+
 # ---------------------------------------------------------------------------
 # SessionMapping dataclass (previously in session_mapper.py)
 # ---------------------------------------------------------------------------
@@ -361,6 +366,82 @@ class PeerRegistry:
             del self._mappings[sid]
             self._mappings_dirty = True
 
+    @staticmethod
+    def _extract_role_stem(display_name: str, backend: AgentType) -> str | None:
+        """Extract the role basename from a display_name.
+
+        display_name convention (spawn-claude.sh worktrees):
+            ``<role>-<timestamp>-<backend.value>``
+
+        Strips trailing ``-<backend.value>`` then trailing ``-<digits>``. Returns
+        None when either segment is absent (e.g. head-tier paths that lack a
+        timestamp). None disables the purge — caller bails out.
+        """
+        suffix = f"-{backend.value}"
+        if not display_name.endswith(suffix):
+            return None
+        base = display_name[: -len(suffix)]
+        match = re.match(r"^(.+?)-\d+$", base)
+        if not match:
+            return None
+        stem = match.group(1)
+        return stem or None
+
+    def _purge_stale_role_siblings_unlocked(
+        self,
+        new_display_name: str,
+        circle: str,
+        backend: AgentType,
+        threshold_sec: float = _STALE_SIBLING_PURGE_THRESHOLD_SEC,
+    ) -> int:
+        """Purge OFFLINE peers sharing ``new_display_name``'s role-stem.
+
+        Watchdog's ``classify_scope`` queries repowire via
+        ``jq 'contains($role)' | first`` — a substring match that picks up any
+        peer whose ``display_name`` contains the role stem. When a fresh scope
+        spawns in a new worktree (new timestamp → new full display_name), a
+        stale OFFLINE entry with the same role stem is the first match and its
+        old ``last_seen`` propagates to the fresh scope as 5h-offline zombie.
+
+        This proactive purge evicts such OFFLINE siblings in the same
+        ``(circle, backend)`` with ``last_seen`` older than ``threshold_sec``.
+        Must hold ``_lock``.
+
+        Returns number of purged peers.
+        """
+        stem = self._extract_role_stem(new_display_name, backend)
+        if stem is None:
+            return 0
+        now = datetime.now(timezone.utc)
+        prefix = f"{stem}-"
+        to_purge: list[str] = []
+        for sid, peer in self._peers.items():
+            if peer.status != PeerStatus.OFFLINE:
+                continue
+            if peer.circle != circle or peer.backend != backend:
+                continue
+            if peer.display_name == new_display_name:
+                continue  # literal match already handled by _build_display_name
+            if not peer.last_seen:
+                continue
+            if not peer.display_name.startswith(prefix):
+                continue
+            if (now - peer.last_seen).total_seconds() < threshold_sec:
+                continue
+            to_purge.append(sid)
+
+        for sid in to_purge:
+            purged = self._peers.pop(sid)
+            self._mappings.pop(sid, None)
+            age = (now - purged.last_seen).total_seconds() if purged.last_seen else 0.0
+            logger.info(
+                "Purged stale role-sibling %s (%s, offline %.0fs)",
+                purged.display_name, sid, age,
+            )
+        if to_purge:
+            self._mappings_dirty = True
+        return len(to_purge)
+
     def _find_or_allocate_mapping(
         self,
         display_name: str,
@@ -600,6 +681,10 @@ class PeerRegistry:
             preserved_role = self._peek_mapping_role(path, circle, backend)
 
             assigned_name = self._build_display_name(path or "", circle, backend)
+            # Hygiene: evict stale OFFLINE siblings sharing the role-stem before
+            # minting the new peer. Watchdog's /peers query would otherwise alias
+            # them onto this scope and kill fresh workers as zombies (beads-wcy).
+            self._purge_stale_role_siblings_unlocked(assigned_name, circle, backend)
             effective_role_for_mapping = role if role is not None else preserved_role
             allocated_id = self._find_or_allocate_mapping(
                 assigned_name, circle, backend, path, role=effective_role_for_mapping,
