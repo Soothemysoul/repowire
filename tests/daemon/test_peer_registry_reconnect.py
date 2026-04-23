@@ -418,3 +418,158 @@ async def test_daemon_restart_preserves_display_name_no_suffix(tmp_path):
         f"Display name changed after restart: {first_name!r} -> {second_name!r}"
     )
     assert "-2-" not in second_name
+
+
+# ---------------------------------------------------------------------------
+# beads-wcy — stale role-sibling purge on spawn
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_stale_role_sibling_purged_on_fresh_spawn(tmp_path):
+    """Old OFFLINE peer with matching role-stem + last_seen > 300s must be
+    purged when a fresh peer with a different timestamp spawns in the same
+    (circle, backend)."""
+    import datetime as _dt
+
+    registry = _make_registry(tmp_path)
+    # Old worker (different timestamp in path)
+    old_id, old_name = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/repo/.worktrees/devops-worker-1000",
+        role=PeerRole.AGENT,
+    )
+    assert old_name == "devops-worker-1000-claude-code"
+    await registry.mark_offline(old_id)
+    # Back-date last_seen past 300s threshold
+    registry._peers[old_id].last_seen = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=600)
+    )
+
+    # New worker (different path → different display_name)
+    new_id, new_name = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/repo/.worktrees/devops-worker-2000",
+        role=PeerRole.AGENT,
+    )
+    assert new_name == "devops-worker-2000-claude-code"
+    assert new_id != old_id
+    assert old_id not in registry._peers, "stale role-sibling must be purged"
+    assert old_id not in registry._mappings, "mapping must also be purged"
+
+
+@pytest.mark.asyncio
+async def test_recent_role_sibling_preserved(tmp_path):
+    """Same scenario but old peer's last_seen < 300s ago: must stay."""
+    import datetime as _dt
+
+    registry = _make_registry(tmp_path)
+    old_id, _ = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/repo/.worktrees/devops-worker-1000",
+        role=PeerRole.AGENT,
+    )
+    await registry.mark_offline(old_id)
+    # Recent disconnect — within threshold
+    registry._peers[old_id].last_seen = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=60)
+    )
+
+    await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/repo/.worktrees/devops-worker-2000",
+        role=PeerRole.AGENT,
+    )
+    assert old_id in registry._peers, "recent offline sibling must not be purged"
+
+
+@pytest.mark.asyncio
+async def test_online_role_sibling_preserved(tmp_path):
+    """ONLINE peer with matching stem must never be purged, regardless of age."""
+    import datetime as _dt
+
+    registry = _make_registry(tmp_path)
+    online_id, _ = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/repo/.worktrees/devops-worker-1000",
+        role=PeerRole.AGENT,
+    )
+    # Back-date last_seen but keep ONLINE status
+    registry._peers[online_id].last_seen = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=600)
+    )
+
+    await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/repo/.worktrees/devops-worker-2000",
+        role=PeerRole.AGENT,
+    )
+    assert online_id in registry._peers, "online sibling must never be purged"
+
+
+@pytest.mark.asyncio
+async def test_cross_circle_sibling_preserved(tmp_path):
+    """Stale sibling in a DIFFERENT circle must not be touched."""
+    import datetime as _dt
+
+    registry = _make_registry(tmp_path)
+    other_id, _ = await registry.allocate_and_register(
+        circle="other",
+        backend=AgentType.CLAUDE_CODE,
+        path="/repo/.worktrees/devops-worker-1000",
+        role=PeerRole.AGENT,
+    )
+    await registry.mark_offline(other_id)
+    registry._peers[other_id].last_seen = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=600)
+    )
+
+    await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/repo/.worktrees/devops-worker-2000",
+        role=PeerRole.AGENT,
+    )
+    assert other_id in registry._peers, "cross-circle sibling must not be purged"
+
+
+@pytest.mark.asyncio
+async def test_head_tier_no_sibling_match(tmp_path):
+    """Head-tier paths (no trailing timestamp) must not trigger purge —
+    stem extraction returns None, helper exits early."""
+    import datetime as _dt
+
+    registry = _make_registry(tmp_path)
+    head_id, head_name = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/ai-infra/agents/backend-head",
+        role=PeerRole.ORCHESTRATOR,
+    )
+    assert head_name == "backend-head-claude-code"
+    await registry.mark_offline(head_id)
+    registry._peers[head_id].last_seen = (
+        _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(seconds=600)
+    )
+
+    # Reconnect the same head (no sibling churn expected)
+    same_id, _ = await registry.allocate_and_register(
+        circle="global",
+        backend=AgentType.CLAUDE_CODE,
+        path="/ai-infra/agents/backend-head",
+        role=PeerRole.ORCHESTRATOR,
+    )
+    # Whether identity-reuse catches this or fresh-registration runs, the
+    # old entry must NOT be silently purged by the new helper. Both outcomes
+    # are acceptable: reuse returns same_id, fresh keeps head_id reachable
+    # via _build_display_name's literal-purge. We just need the helper to
+    # bail out on non-timestamped paths.
+    # Simplest assertion: no crash, registry size stays consistent with
+    # either reuse (1 peer) or literal-replace (1 peer).
+    assert len(registry._peers) == 1
