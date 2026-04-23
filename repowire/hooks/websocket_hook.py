@@ -9,9 +9,15 @@ import fcntl
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import time
+
+try:
+    import httpx
+except ImportError:  # pragma: no cover — httpx is a runtime dep of the hook
+    httpx = None  # type: ignore[assignment]
 
 try:
     import websockets
@@ -40,6 +46,139 @@ _expected_command: str | None = None
 
 class PaneUnsafeError(RuntimeError):
     """Raised when the pane no longer belongs to the expected live agent."""
+
+
+# --- beads-61w: auto-ACK / auto-NACK receipts -------------------------------
+
+_NOTIF_ID_IN_TEXT_RE = re.compile(r"\[#(notif-[a-f0-9]{8})\]")
+_AUTO_ACK_PREFIXES = ("[AUTO-ACK]", "[AUTO-NACK]")
+
+
+def _resolve_my_name() -> str:
+    """Canonical display name for auto-ACK reverse notifies."""
+    name = os.environ.get("REPOWIRE_DISPLAY_NAME") or os.environ.get("REPOWIRE_PEER_NAME")
+    if name:
+        return name
+    try:
+        return get_display_name()
+    except Exception:
+        return "unknown"
+
+
+def _parse_correlation_id(text: str) -> str | None:
+    """Extract notif-XXXXXXXX from a `[#notif-XXX] …` prefix. Scans first 64 chars only."""
+    m = _NOTIF_ID_IN_TEXT_RE.match(text[:64])
+    return m.group(1) if m else None
+
+
+def _should_emit_ack(
+    *,
+    from_peer: str,
+    my_name: str,
+    from_peer_role: str | None,
+    text: str,
+) -> bool:
+    """Auto-ACK skip rules (beads-61w spec §5.4):
+    - loop-prevention: do not ACK an incoming [AUTO-ACK]/[AUTO-NACK]
+    - self-addressed noop: sender == receiver → skip
+    - service-peer noop: telegram/brain-admin have no turn-concept
+    """
+    if text.startswith(_AUTO_ACK_PREFIXES):
+        return False
+    if from_peer and from_peer == my_name:
+        return False
+    if from_peer_role == "service":
+        return False
+    return True
+
+
+async def _daemon_post(path: str, body: dict) -> None:
+    """Fire-and-forget POST to daemon. Swallows errors — auto-ACK is best-effort."""
+    if httpx is None:
+        return
+    daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
+    daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")
+    url = f"http://{daemon_host}:{daemon_port}{path}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            await client.post(url, json=body)
+    except Exception as e:  # pragma: no cover
+        logger.debug("auto-ACK post failed: %s", e)
+
+
+async def _emit_auto_ack(
+    *,
+    correlation_id: str,
+    from_peer: str,
+    my_name: str,
+    interrupt: bool,
+) -> None:
+    status = "interrupted" if interrupt else "queued"
+    await _daemon_post(
+        "/notify",
+        {
+            "from_peer": my_name,
+            "to_peer": from_peer,
+            "text": f"[AUTO-ACK] {correlation_id} delivered: {status}",
+            "bypass_circle": True,
+        },
+    )
+
+
+async def _emit_auto_nack(
+    *,
+    correlation_id: str,
+    from_peer: str,
+    my_name: str,
+    reason: str,
+) -> None:
+    short = reason.split("\n")[0][:120] if reason else "unknown"
+    await _daemon_post(
+        "/notify",
+        {
+            "from_peer": my_name,
+            "to_peer": from_peer,
+            "text": f"[AUTO-NACK] {correlation_id} failed: {short}",
+            "bypass_circle": True,
+        },
+    )
+
+
+async def _maybe_emit_receipt(
+    *,
+    success: bool,
+    from_peer: str,
+    from_peer_role: str | None,
+    text: str,
+    interrupt: bool,
+    failure_reason: str = "",
+) -> None:
+    """Dispatch the auto-ACK or auto-NACK if all skip-rules allow it."""
+    my_name = _resolve_my_name()
+    if not _should_emit_ack(
+        from_peer=from_peer,
+        my_name=my_name,
+        from_peer_role=from_peer_role,
+        text=text,
+    ):
+        return
+    correlation_id = _parse_correlation_id(text)
+    if not correlation_id:
+        return
+    if success:
+        await _emit_auto_ack(
+            correlation_id=correlation_id,
+            from_peer=from_peer,
+            my_name=my_name,
+            interrupt=interrupt,
+        )
+    else:
+        await _emit_auto_nack(
+            correlation_id=correlation_id,
+            from_peer=from_peer,
+            my_name=my_name,
+            reason=failure_reason or "injection failed",
+        )
 
 
 
@@ -195,16 +334,25 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         raise PaneUnsafeError(f"Pane {pane_id} no longer matches the expected agent")
 
     interrupt = bool(data.get("interrupt", False))
+    from_peer_role = data.get("from_peer_role")
 
     if msg_type == "query":
         correlation_id = data.get("correlation_id", "")
         from_peer = data.get("from_peer", "unknown")
         text = data.get("text", "")
         try:
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, text, interrupt):
+            ok = await asyncio.to_thread(_tmux_send_keys, pane_id, text, interrupt)
+            if ok:
                 # Track pending correlation_id for stop hook response delivery
                 _push_pending_cid(pane_id, correlation_id)
                 logger.info(f"Injected query from {from_peer}: {correlation_id[:8]}")
+                await _maybe_emit_receipt(
+                    success=True,
+                    from_peer=from_peer,
+                    from_peer_role=from_peer_role,
+                    text=text,
+                    interrupt=interrupt,
+                )
             else:
                 error_msg = f"Failed to send keys to pane {pane_id}"
                 logger.error(error_msg)
@@ -218,8 +366,18 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                             }
                         )
                     )
+                await _maybe_emit_receipt(
+                    success=False,
+                    from_peer=from_peer,
+                    from_peer_role=from_peer_role,
+                    text=text,
+                    interrupt=interrupt,
+                    failure_reason=error_msg,
+                )
                 if not await asyncio.to_thread(_is_pane_safe, pane_id):
                     raise PaneUnsafeError(error_msg)
+        except PaneUnsafeError:
+            raise
         except Exception as e:
             logger.error(f"Failed to inject query: {e}")
             if websocket:
@@ -235,29 +393,87 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     )
                 except Exception:
                     pass
+            await _maybe_emit_receipt(
+                success=False,
+                from_peer=from_peer,
+                from_peer_role=from_peer_role,
+                text=text,
+                interrupt=interrupt,
+                failure_reason=str(e),
+            )
             if not await asyncio.to_thread(_is_pane_safe, pane_id):
                 raise PaneUnsafeError(str(e)) from e
 
     elif msg_type == "notify":
+        from_peer = data.get("from_peer", "unknown")
+        text = data.get("text", "")
         try:
-            from_peer = data.get("from_peer", "unknown")
-            text = data.get("text", "")
-            if await asyncio.to_thread(
+            ok = await asyncio.to_thread(
                 _tmux_send_keys, pane_id, f"@{from_peer}: {text}", interrupt
-            ):
+            )
+            if ok:
                 logger.info(f"Injected notification from {from_peer}")
+                await _maybe_emit_receipt(
+                    success=True,
+                    from_peer=from_peer,
+                    from_peer_role=from_peer_role,
+                    text=text,
+                    interrupt=interrupt,
+                )
+            else:
+                await _maybe_emit_receipt(
+                    success=False,
+                    from_peer=from_peer,
+                    from_peer_role=from_peer_role,
+                    text=text,
+                    interrupt=interrupt,
+                    failure_reason=f"send_keys failed for pane {pane_id}",
+                )
         except Exception as e:
             logger.error(f"Failed to inject notification: {e}")
+            await _maybe_emit_receipt(
+                success=False,
+                from_peer=from_peer,
+                from_peer_role=from_peer_role,
+                text=text,
+                interrupt=interrupt,
+                failure_reason=str(e),
+            )
 
     elif msg_type == "broadcast":
+        from_peer = data.get("from_peer", "unknown")
+        text = data.get("text", "")
         try:
-            from_peer = data.get("from_peer", "unknown")
-            text = data.get("text", "")
             msg = f"@{from_peer} [broadcast]: {text}"
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, msg, interrupt):
+            ok = await asyncio.to_thread(_tmux_send_keys, pane_id, msg, interrupt)
+            if ok:
                 logger.info(f"Injected broadcast from {from_peer}")
+                await _maybe_emit_receipt(
+                    success=True,
+                    from_peer=from_peer,
+                    from_peer_role=from_peer_role,
+                    text=text,
+                    interrupt=interrupt,
+                )
+            else:
+                await _maybe_emit_receipt(
+                    success=False,
+                    from_peer=from_peer,
+                    from_peer_role=from_peer_role,
+                    text=text,
+                    interrupt=interrupt,
+                    failure_reason=f"send_keys failed for pane {pane_id}",
+                )
         except Exception as e:
             logger.error(f"Failed to inject broadcast: {e}")
+            await _maybe_emit_receipt(
+                success=False,
+                from_peer=from_peer,
+                from_peer_role=from_peer_role,
+                text=text,
+                interrupt=interrupt,
+                failure_reason=str(e),
+            )
 
     elif msg_type == "ping":
         pane_alive = await asyncio.to_thread(_is_pane_safe, pane_id)
