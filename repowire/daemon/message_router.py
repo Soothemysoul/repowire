@@ -99,6 +99,8 @@ class MessageRouter:
         to_session_id: str,
         to_peer_name: str,
         text: str,
+        interrupt: bool = False,
+        from_peer_role: str | None = None,
     ) -> None:
         """Send notification (fire-and-forget).
 
@@ -107,6 +109,12 @@ class MessageRouter:
             to_session_id: Session ID of recipient
             to_peer_name: Display name of recipient (for logging)
             text: Notification text
+            interrupt: If True, receiver hook re-adds Escape before paste so
+                the message cancels the receiver's current turn (beads-61w).
+                Default False — message queues naturally in tty buffer.
+            from_peer_role: Sender peer role (agent/service/orchestrator/…).
+                Used receiver-side to skip auto-ACK back to service peers
+                (telegram, brain-admin) that have no turn-concept.
 
         Raises:
             TransportError: If send fails
@@ -115,7 +123,10 @@ class MessageRouter:
             "type": "notify",
             "from_peer": from_peer,
             "text": text,
+            "interrupt": interrupt,
         }
+        if from_peer_role is not None:
+            message["from_peer_role"] = from_peer_role
 
         await self._transport.send(to_session_id, message)
         logger.info(f"Notification sent: {from_peer} -> {to_peer_name}")

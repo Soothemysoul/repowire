@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
+import logging
+import os
+import re
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,7 +23,51 @@ from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import PeerRole, PeerStatus
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["messages"])
+
+_INTERRUPT_CORRELATION_RE = re.compile(r"\[#(notif-[a-f0-9]{8})\]")
+_INTERRUPT_TEXT_PREFIX_MAX = 200
+
+
+def _interrupt_log_path() -> Path:
+    """beads-61w: per-entry path for interrupts ledger. Overridable via env."""
+    override = os.environ.get("REPOWIRE_INTERRUPT_LOG")
+    if override:
+        return Path(override)
+    return Path(os.environ.get("HOME", ".")) / "ai-infra/ops/repowire/interrupts.jsonl"
+
+
+def _log_interrupt(from_peer: str, to_peer: str, text: str) -> None:
+    """Append a JSON line to the interrupt ledger.
+
+    One entry per interrupt=True /notify. flock'd so concurrent daemon
+    workers do not interleave partial writes. Failures are swallowed —
+    telemetry is best-effort, it must not break the notify path.
+    """
+    try:
+        path = _interrupt_log_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        m = _INTERRUPT_CORRELATION_RE.match(text[:64])
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "from_peer": from_peer,
+            "to_peer": to_peer,
+            "correlation_id": m.group(1) if m else None,
+            "text_prefix": text[:_INTERRUPT_TEXT_PREFIX_MAX],
+        }
+        line = json.dumps(entry, ensure_ascii=False) + "\n"
+        with open(path, "a") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                fh.write(line)
+                fh.flush()
+                os.fsync(fh.fileno())
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
+    except Exception as e:  # pragma: no cover
+        logger.warning("interrupt-log write failed: %s", e)
 
 
 class QueryRequest(BaseModel):
@@ -47,6 +97,14 @@ class NotifyRequest(BaseModel):
     text: str = Field(..., description="Notification text")
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
     circle: str | None = Field(None, description="Circle to scope target peer lookup")
+    interrupt: bool = Field(
+        default=False,
+        description=(
+            "Force immediate delivery by re-adding Escape before paste; "
+            "cancels receiver's current turn (beads-61w). Default False — "
+            "message queues naturally until the receiver finishes its turn."
+        ),
+    )
 
 
 class BroadcastRequest(BaseModel):
@@ -143,6 +201,9 @@ async def notify_peer(
             detail="User-facing peer access denied — escalate via director (see CLAUDE.md user-facing communication policy)",
         )
 
+    if request.interrupt:
+        _log_interrupt(request.from_peer, request.to_peer, request.text)
+
     try:
         await peer_registry.notify(
             from_peer=request.from_peer,
@@ -150,6 +211,7 @@ async def notify_peer(
             text=request.text,
             bypass_circle=request.bypass_circle,
             circle=request.circle,
+            interrupt=request.interrupt,
         )
         return OkResponse()
     except ValueError as e:
