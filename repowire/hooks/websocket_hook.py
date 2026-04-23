@@ -89,38 +89,38 @@ def _wait_for_normal_mode(pane_id: str, max_retries: int = 20, sleep_s: float = 
     )
 
 
-def _tmux_send_keys(pane_id: str, text: str) -> bool:
+def _tmux_send_keys(pane_id: str, text: str, interrupt: bool = False) -> bool:
     """Send keys to a tmux pane via subprocess.
 
-    Implements Gastown's battle-tested NudgeSession pattern:
-    0. Exit copy-mode if active (send-keys -X cancel is a no-op outside copy-mode)
-    0a. Wait until pane_in_mode=0 — tmux processes cancel asynchronously
-    1. Send text in literal mode (bracketed paste)
-    2. 500ms debounce — tested, required for paste to complete
-    3. Escape — exits vim INSERT mode if active, harmless otherwise
-    4. Enter — submits
+    Default path (interrupt=False) mirrors direct-stdin semantics: cancel
+    copy-mode if active, paste text via bracketed-paste, Enter. No Escape —
+    Escape cancels Claude's in-flight turn, so sending it unconditionally
+    turned every hook injection into an interrupt (beads-61w forensics).
+    The tty buffer itself becomes the natural per-session message queue.
+
+    interrupt=True re-adds Escape *before* paste so the cancel lands first
+    and the paste is consumed as the receiver's next input (opt-in escape
+    hatch for genuine emergencies).
     """
     try:
-        # Unconditional cancel: no-op when pane is in normal mode, exits copy-mode
-        # when active. Simpler and more reliable than probing #{pane_in_mode} first.
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
             capture_output=True,
         )
-        # tmux processes cancel asynchronously; poll until mode cleared before inject.
         _wait_for_normal_mode(pane_id)
+        if interrupt:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "Escape"],
+                capture_output=True,
+                check=True,
+            )
+            time.sleep(0.1)
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "-l", text],
             capture_output=True,
             check=True,
         )
         time.sleep(0.5)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "Escape"],
-            capture_output=True,
-            check=True,
-        )
-        time.sleep(0.1)
         subprocess.run(
             ["tmux", "send-keys", "-t", pane_id, "Enter"],
             capture_output=True,

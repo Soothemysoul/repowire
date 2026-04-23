@@ -41,8 +41,11 @@ def test_cancel_called_even_outside_copy_mode():
     assert len(cancel_calls) == 1, "cancel must be called exactly once per inject"
 
 
-def test_normal_mode_still_sends_text_and_enter():
-    """Full sequence: cancel → -l text → Escape → Enter (normal pane)."""
+def test_default_omits_escape(beads_61w_queue_semantics=None):
+    """beads-61w: default path MUST NOT send Escape — Escape prefix cancels
+    Claude's current turn, breaking queue-by-default behaviour. Escape is
+    opt-in via interrupt=True only.
+    """
     with patch("subprocess.run", return_value=_make_run()) as mock_run, \
          patch("time.sleep"):
         result = _tmux_send_keys("%3", "ping")
@@ -51,7 +54,42 @@ def test_normal_mode_still_sends_text_and_enter():
     cmds = _collect_cmds(mock_run)
     assert any("-l" in c for c in cmds), "literal send-keys required"
     assert any("Enter" in c for c in cmds), "Enter required"
-    assert any("Escape" in c for c in cmds), "Escape required"
+    escape_calls = [c for c in cmds if len(c) >= 5 and c[-1] == "Escape"]
+    assert escape_calls == [], (
+        "beads-61w: default path must not send Escape; saw " + repr(escape_calls)
+    )
+
+
+def test_interrupt_true_sends_escape_before_paste():
+    """beads-61w: interrupt=True re-adds Escape before paste to cancel the
+    receiver's current turn (opt-in escape-hatch).
+    """
+    with patch("subprocess.run", return_value=_make_run()) as mock_run, \
+         patch("time.sleep"):
+        result = _tmux_send_keys("%6", "urgent", interrupt=True)
+
+    assert result is True
+    cmds = _collect_cmds(mock_run)
+    escape_idx = next(
+        (i for i, c in enumerate(cmds) if len(c) >= 5 and c[-1] == "Escape"),
+        None,
+    )
+    literal_idx = next(i for i, c in enumerate(cmds) if "-l" in c)
+    enter_idx = next((i for i, c in enumerate(cmds) if c and c[-1] == "Enter"), None)
+    assert escape_idx is not None, "Escape must be sent when interrupt=True"
+    assert escape_idx < literal_idx, "Escape must precede paste so cancel lands first"
+    assert enter_idx is not None and enter_idx > literal_idx, "Enter must follow paste"
+
+
+def test_interrupt_false_explicit_omits_escape():
+    """Explicit interrupt=False — identical to default; no Escape."""
+    with patch("subprocess.run", return_value=_make_run()) as mock_run, \
+         patch("time.sleep"):
+        _tmux_send_keys("%7", "hello", interrupt=False)
+
+    cmds = _collect_cmds(mock_run)
+    escape_calls = [c for c in cmds if len(c) >= 5 and c[-1] == "Escape"]
+    assert escape_calls == [], "interrupt=False must not send Escape"
 
 
 def test_timing_race_waits_for_copy_mode_exit():
