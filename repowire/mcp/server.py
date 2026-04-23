@@ -218,7 +218,12 @@ def create_mcp_server() -> FastMCP:
         return result.get("text", "")
 
     @mcp.tool()
-    async def notify_peer(peer_name: str, message: str, circle: str | None = None) -> str:
+    async def notify_peer(
+        peer_name: str,
+        message: str,
+        circle: str | None = None,
+        interrupt: bool = False,
+    ) -> str:
         """[Repowire mesh] Send a fire-and-forget notification to a peer in another project.
 
         Use for status updates, announcements, or replying to notifications.
@@ -233,6 +238,11 @@ def create_mcp_server() -> FastMCP:
             message: The notification message
             circle: Circle to scope the lookup (optional, required when multiple
                     peers share the same name in different circles)
+            interrupt: If True, cancels the receiver's current turn before
+                delivering the message. Default False — the message queues
+                naturally in the receiver's tty buffer until the current turn
+                completes. Use only for genuine emergencies (critical blocker,
+                cancellation request). Infrastructure logs all interrupt usage.
 
         Returns:
             Correlation ID (format: notif-XXXXXXXX) for tracking.
@@ -244,6 +254,7 @@ def create_mcp_server() -> FastMCP:
             "from_peer": from_peer,
             "to_peer": peer_name,
             "text": f"[#{correlation_id}] {message}",
+            "interrupt": interrupt,
         }
         if circle is not None:
             body["circle"] = circle

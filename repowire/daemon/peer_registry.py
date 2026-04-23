@@ -845,6 +845,7 @@ class PeerRegistry:
         text: str,
         bypass_circle: bool = False,
         circle: str | None = None,
+        interrupt: bool = False,
     ) -> None:
         """Send a notification to a peer (fire-and-forget).
 
@@ -859,6 +860,7 @@ class PeerRegistry:
             peer_id = peer.peer_id
             peer_name = peer.display_name
             from_peer_id = from_obj.peer_id if from_obj else None
+            from_peer_role = from_obj.role.value if from_obj and from_obj.role else None
 
         self.add_event(
             "notification",
@@ -873,6 +875,8 @@ class PeerRegistry:
             to_session_id=peer_id,
             to_peer_name=peer_name,
             text=text,
+            interrupt=interrupt,
+            from_peer_role=from_peer_role,
         )
 
     async def broadcast(

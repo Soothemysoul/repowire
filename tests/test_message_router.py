@@ -42,6 +42,34 @@ class TestSendNotification:
         with pytest.raises(TransportError):
             await router.send_notification("sender", "sid-1", "recipient", "hello")
 
+    async def test_interrupt_defaults_to_false_in_ws_frame(self, router, transport):
+        """beads-61w: frame carries interrupt=False when caller does not pass it."""
+        await router.send_notification("sender", "sid-1", "recipient", "hello")
+        msg = transport.send.call_args[0][1]
+        assert msg["interrupt"] is False
+
+    async def test_interrupt_true_propagates_to_ws_frame(self, router, transport):
+        """beads-61w: interrupt=True lands in the frame so the hook can re-add Escape."""
+        await router.send_notification(
+            "sender", "sid-1", "recipient", "urgent", interrupt=True
+        )
+        msg = transport.send.call_args[0][1]
+        assert msg["interrupt"] is True
+
+    async def test_from_peer_role_propagates_to_ws_frame(self, router, transport):
+        """beads-61w: hook needs from_peer_role for service-peer auto-ACK skip."""
+        await router.send_notification(
+            "telegram", "sid-1", "recipient", "hi", from_peer_role="service"
+        )
+        msg = transport.send.call_args[0][1]
+        assert msg["from_peer_role"] == "service"
+
+    async def test_from_peer_role_defaults_to_none_key_absent(self, router, transport):
+        """When role is unknown, key is omitted rather than set to None (smaller frame)."""
+        await router.send_notification("cli", "sid-1", "recipient", "hi")
+        msg = transport.send.call_args[0][1]
+        assert "from_peer_role" not in msg or msg["from_peer_role"] is None
+
 
 class TestSendQuery:
     async def test_not_connected_raises(self, router, transport):

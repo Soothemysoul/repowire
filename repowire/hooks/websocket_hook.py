@@ -194,12 +194,14 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 pass
         raise PaneUnsafeError(f"Pane {pane_id} no longer matches the expected agent")
 
+    interrupt = bool(data.get("interrupt", False))
+
     if msg_type == "query":
         correlation_id = data.get("correlation_id", "")
         from_peer = data.get("from_peer", "unknown")
         text = data.get("text", "")
         try:
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, text):
+            if await asyncio.to_thread(_tmux_send_keys, pane_id, text, interrupt):
                 # Track pending correlation_id for stop hook response delivery
                 _push_pending_cid(pane_id, correlation_id)
                 logger.info(f"Injected query from {from_peer}: {correlation_id[:8]}")
@@ -240,7 +242,9 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         try:
             from_peer = data.get("from_peer", "unknown")
             text = data.get("text", "")
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, f"@{from_peer}: {text}"):
+            if await asyncio.to_thread(
+                _tmux_send_keys, pane_id, f"@{from_peer}: {text}", interrupt
+            ):
                 logger.info(f"Injected notification from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject notification: {e}")
@@ -250,7 +254,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
             from_peer = data.get("from_peer", "unknown")
             text = data.get("text", "")
             msg = f"@{from_peer} [broadcast]: {text}"
-            if await asyncio.to_thread(_tmux_send_keys, pane_id, msg):
+            if await asyncio.to_thread(_tmux_send_keys, pane_id, msg, interrupt):
                 logger.info(f"Injected broadcast from {from_peer}")
         except Exception as e:
             logger.error(f"Failed to inject broadcast: {e}")
