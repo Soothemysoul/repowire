@@ -1346,6 +1346,66 @@ class PeerRegistry:
             self._save_events()
             self._persist_mappings()
 
+    async def liveness_tick(self) -> None:
+        """Reconcile peer.status with transport connection state.
+
+        Cheap operation intended to run every ~5s from a background task.
+        Unlike lazy_repair (30s-debounced, triggered on endpoints), this
+        runs unconditionally — idle daemons still get accurate status.
+
+        Logic:
+        1. demote ghost peers whose status is ONLINE/BUSY but the
+           transport has no WS for them — registry was stale.
+        2. promote peers whose status is OFFLINE but the transport DOES
+           have a live WS for them — usually after a race between an
+           old handler's finally-demote and a new handler's connect.
+        """
+        transport = self._transport
+        if not transport:
+            return
+
+        async with self._lock:
+            ghosts = [
+                p.peer_id for p in self._peers.values()
+                if p.status in (PeerStatus.ONLINE, PeerStatus.BUSY)
+                and not transport.is_connected(p.peer_id)
+            ]
+            resurrected = [
+                p.peer_id for p in self._peers.values()
+                if p.status == PeerStatus.OFFLINE
+                and transport.is_connected(p.peer_id)
+            ]
+
+        for peer_id in ghosts:
+            await self.mark_offline(peer_id)
+        for peer_id in resurrected:
+            await self.update_peer_status(peer_id, PeerStatus.ONLINE)
+
+        if ghosts or resurrected:
+            logger.info(
+                "liveness_tick: demoted=%d promoted=%d",
+                len(ghosts), len(resurrected),
+            )
+
+    async def liveness_tick_loop(self, interval_sec: float = 5.0) -> None:
+        """Background loop that calls liveness_tick every interval_sec.
+
+        Cancelled via asyncio.CancelledError on daemon shutdown. Logs and
+        swallows individual tick errors to keep the loop alive across a
+        transient bug — the tick is best-effort reconciliation.
+        """
+        logger.info("liveness_tick_loop started (interval=%.1fs)", interval_sec)
+        try:
+            while True:
+                try:
+                    await self.liveness_tick()
+                except Exception:
+                    logger.exception("liveness_tick failed; continuing")
+                await asyncio.sleep(interval_sec)
+        except asyncio.CancelledError:
+            logger.info("liveness_tick_loop cancelled")
+            raise
+
     async def _do_repair(self) -> None:
         """Ping/pong liveness check. Must hold _repair_lock."""
         transport = self._transport

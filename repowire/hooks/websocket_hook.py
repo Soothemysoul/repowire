@@ -528,7 +528,11 @@ async def main() -> int:
 
     while attempt < max_attempts:
         try:
-            async with websockets.connect(uri, ping_interval=None, ping_timeout=None) as websocket:
+            async with websockets.connect(
+                uri,
+                ping_interval=20,
+                ping_timeout=5,
+            ) as websocket:
                 attempt = 0
 
                 connect_msg: dict[str, str] = {

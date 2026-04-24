@@ -105,6 +105,10 @@ def create_app(
         )
 
         await peer_registry.start()
+        liveness_task = asyncio.create_task(
+            peer_registry.liveness_tick_loop(),
+            name="peer_registry.liveness_tick_loop",
+        )
         init_deps(
             cfg, peer_registry, app.state,
             lifecycle_handler=lifecycle_handler,
@@ -161,6 +165,12 @@ def create_app(
         logger.info("Unified WebSocket backend initialized")
 
         yield
+
+        liveness_task.cancel()
+        try:
+            await liveness_task
+        except asyncio.CancelledError:
+            pass
 
         for name, svc in reversed(services):
             await svc.stop()  # type: ignore[union-attr]
