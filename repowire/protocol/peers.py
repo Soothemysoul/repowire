@@ -64,6 +64,16 @@ class Peer(BaseModel):
 
     status: PeerStatus = Field(default=PeerStatus.OFFLINE, description="Current status")
     last_seen: datetime | None = Field(None, description="Last activity timestamp")
+    offline_since: datetime | None = Field(
+        None,
+        description=(
+            "Timestamp of most recent transition to OFFLINE. None when ONLINE/BUSY. "
+            "Used by name-takeover logic (q51) to require a sustained-absence window "
+            "before reclaiming a display_name from an apparently-offline peer — "
+            "guards against asymmetric WS drops where a still-alive peer is briefly "
+            "marked OFFLINE."
+        ),
+    )
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     description: str = Field(default="", description="Current task description (self-reported)")
 
@@ -131,6 +141,7 @@ class Peer(BaseModel):
             "role": self.role.value,
             "status": self.status.value,
             "last_seen": self.last_seen.isoformat() if self.last_seen else None,
+            "offline_since": self.offline_since.isoformat() if self.offline_since else None,
             "metadata": self.metadata,
             "description": self.description,
         }

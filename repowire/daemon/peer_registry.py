@@ -38,6 +38,13 @@ logger = logging.getLogger(__name__)
 # /peers query from aliasing them onto the fresh scope (beads-wcy).
 _STALE_SIBLING_PURGE_THRESHOLD_SEC = 300.0
 
+# Sustained-absence threshold (q51 fix): minimum seconds a peer must be
+# OFFLINE before its display_name can be reclaimed via takeover. Guards
+# against asymmetric WS drops where an alive peer is briefly demoted to
+# OFFLINE by liveness_tick. 30s is small enough to keep cleanup responsive
+# but large enough to outlast typical reconnect delays.
+_MIN_OFFLINE_SECONDS_FOR_TAKEOVER = 30.0
+
 # ---------------------------------------------------------------------------
 # SessionMapping dataclass (previously in session_mapper.py)
 # ---------------------------------------------------------------------------
@@ -316,6 +323,23 @@ class PeerRegistry:
 
             sid, peer = blocker
             if peer.status == PeerStatus.OFFLINE:
+                # q51 sustained-absence guard: don't reclaim a name from an
+                # OFFLINE peer that just dropped — could be transient
+                # asymmetric-WS drop. Require the peer to have been OFFLINE
+                # for at least _MIN_OFFLINE_SECONDS_FOR_TAKEOVER before
+                # pruning. peers without offline_since (legacy/imported)
+                # are treated as old enough.
+                if peer.offline_since is not None:
+                    age = (datetime.now(timezone.utc) - peer.offline_since).total_seconds()
+                    if age < _MIN_OFFLINE_SECONDS_FOR_TAKEOVER:
+                        logger.info(
+                            "Takeover deferred for %s — offline only %.1fs (need %.1fs)",
+                            candidate, age, _MIN_OFFLINE_SECONDS_FOR_TAKEOVER,
+                        )
+                        # Fall through to suffix path (don't prune)
+                        candidate = f"{base}-{suffix}"
+                        suffix += 1
+                        continue
                 # Prune the offline peer entirely (clean takeover)
                 del self._peers[sid]
                 self._mappings.pop(sid, None)
@@ -1019,12 +1043,11 @@ class PeerRegistry:
     # ------------------------------------------------------------------
 
     async def update_peer_status(self, identifier: str, status: PeerStatus) -> None:
-        """Update peer status."""
+        """Update peer status. Tracks `offline_since` for q51 takeover threshold."""
         async with self._lock:
             peer = self._lookup_peer_unlocked(identifier)
             if peer:
-                peer.status = status
-                peer.last_seen = datetime.now(timezone.utc)
+                _set_peer_status(peer, status)
             else:
                 logger.warning(
                     "update_peer_status: peer not found: %s (status=%s not applied)",
@@ -1129,8 +1152,7 @@ class PeerRegistry:
             peer = self._lookup_peer_unlocked(identifier)
             if not peer:
                 return 0
-            peer.status = PeerStatus.OFFLINE
-            peer.last_seen = datetime.now(timezone.utc)
+            _set_peer_status(peer, PeerStatus.OFFLINE)
             session_id = peer.peer_id
 
         cancelled = 0
@@ -1459,3 +1481,27 @@ class PeerRegistry:
                 await self._query_tracker.cancel_queries_to_peer(peer_id)
 
         await self._evict_stale_peers()
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers (q51 sustained-absence support)
+# ---------------------------------------------------------------------------
+
+
+def _set_peer_status(peer: Any, status: PeerStatus) -> None:
+    """Apply a status transition to a peer, maintaining offline_since.
+
+    OFFLINE: stamp offline_since IF this is a new transition (preserves
+    the original timestamp on re-OFFLINE no-op so the takeover threshold
+    counts from the FIRST drop, not the most recent re-confirm).
+
+    ONLINE/BUSY: clear offline_since (peer is live again).
+    """
+    now = datetime.now(timezone.utc)
+    if status == PeerStatus.OFFLINE:
+        if peer.status != PeerStatus.OFFLINE or peer.offline_since is None:
+            peer.offline_since = now
+    else:
+        peer.offline_since = None
+    peer.status = status
+    peer.last_seen = now
