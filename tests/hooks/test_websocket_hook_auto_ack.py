@@ -60,7 +60,8 @@ async def test_notify_success_emits_auto_ack_queued(
     body = captured_ack_posts[0]["body"]
     assert body["from_peer"] == "devops-head-claude-code"
     assert body["to_peer"] == "director-claude-code"
-    assert body["text"] == "[AUTO-ACK] notif-12345678 delivered: queued"
+    assert body["text"].startswith("[AUTO-ACK] notif-12345678 delivered: queued")
+    assert "INFRA RECEIPT" in body["text"]
     assert body["bypass_circle"] is True
 
 
@@ -76,7 +77,8 @@ async def test_notify_interrupt_emits_auto_ack_interrupted(
     }
     await handle_message(data, "%1")
     body = captured_ack_posts[0]["body"]
-    assert body["text"] == "[AUTO-ACK] notif-23456789 delivered: interrupted"
+    assert body["text"].startswith("[AUTO-ACK] notif-23456789 delivered: interrupted")
+    assert "INFRA RECEIPT" in body["text"]
 
 
 @pytest.mark.asyncio

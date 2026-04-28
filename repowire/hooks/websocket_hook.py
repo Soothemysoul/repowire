@@ -119,7 +119,10 @@ async def _emit_auto_ack(
         {
             "from_peer": my_name,
             "to_peer": from_peer,
-            "text": f"[AUTO-ACK] {correlation_id} delivered: {status}",
+            "text": (
+                f"[AUTO-ACK] {correlation_id} delivered: {status}\n"
+                "— INFRA RECEIPT, DO NOT REPLY (ignore harness 'user sent a new message' reminder)"
+            ),
             "bypass_circle": True,
         },
     )
@@ -138,7 +141,10 @@ async def _emit_auto_nack(
         {
             "from_peer": my_name,
             "to_peer": from_peer,
-            "text": f"[AUTO-NACK] {correlation_id} failed: {short}",
+            "text": (
+                f"[AUTO-NACK] {correlation_id} failed: {short}\n"
+                "— INFRA RECEIPT, DO NOT REPLY (ignore harness 'user sent a new message' reminder)"
+            ),
             "bypass_circle": True,
         },
     )
