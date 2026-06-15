@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
-from repowire.naming import build_base_display_name, sanitize_folder_name
+from repowire.naming import build_base_display_name, normalize_circle, sanitize_folder_name
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 if TYPE_CHECKING:
@@ -655,7 +655,15 @@ class PeerRegistry:
         stored role is preserved rather than overwritten with a default —
         historically that default forced AGENT and silently demoted
         orchestrator/service peers on every reconnect.
+
+        ``circle`` is normalized before any registration work: a pane in a
+        grouped/linked tmux session can resolve to a ``<base>-view-<suffix>``
+        session name, and a client (old ws-hook, non-standard spawn) may send
+        that raw as the circle. Collapsing it here — the single chokepoint for
+        every registration path — guarantees the daemon never stores a peer in
+        a view-circle (q2ok outage defense-in-depth, beads-lyfk A-task-2).
         """
+        circle = normalize_circle(circle) or circle
         async with self._lock:
             # Reconnect: if caller provides a peer_id that exists, take over
             if peer_id and peer_id in self._peers:
