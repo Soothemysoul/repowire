@@ -745,7 +745,11 @@ class PeerRegistry:
             if pane_id:
                 self._release_pane(pane_id, allocated_id)
 
-            effective_role = effective_role_for_mapping if effective_role_for_mapping is not None else self._mappings[allocated_id].role
+            effective_role = (
+                effective_role_for_mapping
+                if effective_role_for_mapping is not None
+                else self._mappings[allocated_id].role
+            )
 
             # --- create and insert Peer ---
             peer = Peer(
