@@ -129,6 +129,16 @@ stale-записи = circle регистрации.
 ---
 
 ## Общие требования (high blast-radius)
+- 🔴 **RELEASE-GATE (non-negotiable, q2ok incident): тест-изоляция от живого
+  демона.** ВСЕ тесты, трогающие mesh-delivery (demote/disconnect/interrupt/
+  singleton/socket-close/liveness), гоняются ТОЛЬКО против ИЗОЛИРОВАННОГО
+  инстанса демона (отдельный port/tmpdir) ИЛИ мок-transport/tmux. НИКОГДА
+  против живого `127.0.0.1:8377` и живых пиров. Причина: тест по живому демону
+  вызвал MASS-десинк (director/drafter-pm/backend-head/devops-head offline,
+  placeholder AUTO-ACK в пейне director'а). Защита уже в репе: autouse-фикстура
+  `tests/conftest.py::_isolate_daemon_target` (commit ba3f16e) уводит дефолтный
+  daemon-target на нерутируемый порт. PR-ревью НЕ ПРОХОДИТ, если тест бьёт по
+  живому демону — это обязательный acceptance-criterion.
 - TDD: каждый task — тест-первый, один фикс за раз, прогон полного test-suite
   после каждого.
 - Не трогать дешёвый `liveness_tick` (5с) — он остаётся WS-only; pane-ping
