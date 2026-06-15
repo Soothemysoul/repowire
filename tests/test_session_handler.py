@@ -119,6 +119,42 @@ class TestSessionMain:
     @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
     @patch(
         "repowire.hooks.session_handler._register_peer_http",
+        return_value=("repow-global-abc12345", "director-claude-code"),
+    )
+    @patch(
+        "repowire.hooks.session_handler.get_tmux_info",
+        return_value={
+            "pane_id": "%64",
+            "session_name": "global-view-agents-brain-team",
+            "window_name": "test",
+        },
+    )
+    @patch("repowire.hooks.session_handler.subprocess.Popen")
+    @patch.dict("os.environ", {}, clear=False)
+    def test_session_start_normalizes_view_circle(
+        self, mock_popen, mock_tmux, mock_register, mock_fetch, tmp_path,
+    ):
+        """When REPOWIRE_CIRCLE is unset and the pane resolves to a grouped
+        view-session name, registration must fall back to the *base* circle
+        (global), not the view alias — the q2ok director symptom (A-task-5).
+        Mirrors the A-task-1 fix in the ws-hook, on the SessionStart path."""
+        import os as _os
+        _os.environ.pop("REPOWIRE_AGENT_PATH", None)
+        _os.environ.pop("REPOWIRE_CIRCLE", None)
+        with patch("repowire.config.models.CACHE_DIR", tmp_path):
+            result = _run_with_input({
+                "hook_event_name": "SessionStart",
+                "cwd": str(tmp_path),
+                "session_id": "abc12345-rest",
+            })
+            assert result == 0
+            mock_register.assert_called_once()
+            # _register_peer_http(identity_path, circle, backend_type, ...)
+            assert mock_register.call_args[0][1] == "global"
+
+    @patch("repowire.hooks.session_handler.fetch_peers", return_value=None)
+    @patch(
+        "repowire.hooks.session_handler._register_peer_http",
         return_value=("repow-default-abc12345", "test-claude-code"),
     )
     @patch(

@@ -15,7 +15,7 @@ from urllib.parse import quote
 
 from repowire.config.models import AgentType
 from repowire.hooks._identity import resolve_agent_path
-from repowire.hooks._tmux import get_tmux_info
+from repowire.hooks._tmux import get_tmux_info, normalize_circle
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
     daemon_get,
@@ -224,7 +224,16 @@ def main(backend: str = "claude-code") -> int:
         clear_pane_runtime_state(pane_id)
 
         # Register peer via HTTP -- daemon assigns peer_id and display_name.
-        circle = os.environ.get("REPOWIRE_CIRCLE") or tmux_info["session_name"] or "default"
+        # When REPOWIRE_CIRCLE is unset, the tmux session_name fallback can be a
+        # grouped-session view alias (<base>-view-<suffix>) for a pane in a
+        # linked/Tilix session — normalize it to the base circle so we never
+        # register into a view-circle (q2ok director outage; mirrors the
+        # ws-hook fallback fix, A-task-1/A-task-5).
+        circle = (
+            os.environ.get("REPOWIRE_CIRCLE")
+            or normalize_circle(tmux_info["session_name"])
+            or "default"
+        )
         metadata = {"project": folder_name}
         peer_id, display_name = _register_peer_http(
             identity_path,
