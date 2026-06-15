@@ -1,212 +1,175 @@
-# Design: фикс circle-clobber + hardening reaper (beads-q2ok)
+# Design: фикс circle-мисрегистрации + hardening reaper/registry (beads-q2ok)
 
-- **Дата:** 2026-06-15
+- **Дата:** 2026-06-15 (rev.2 — после live-инцидента и коррекции RCA)
 - **Эпик:** beads-q2ok (P1, project=agents-brain-team)
-- **Subtask'и:** beads-lyfk (A, circle-clobber, P1), beads-nxxm (B, reaper, P2)
-- **Репозиторий:** repowire-fork (демон)
-- **Автор дизайна:** devops-head
-- **Статус:** на ревью у director (checkpoint перед merge+рестартом)
+- **Subtask'и:** beads-lyfk (A, circle, P1), beads-nxxm (B, reaper/registry, P2)
+- **Репозиторий:** repowire-fork (демон + ws-hook)
+- **Статус:** brainstorm продолжается; checkpoint-greenlight director'а — перед merge+рестартом
 
 > Blast radius: правки в mesh-демоне, от которого зависят ВСЕ живые агенты.
-> Рестарт демона рвёт коннекты. Merge + рестарт — только после greenlight
-> director'а и координации окна с drafter-pm (#96→#95+wupw).
+> Merge + рестарт демона — только после greenlight director'а и координации
+> окна с drafter-pm (#96→#95+wupw). Решение one-vs-two рестартов — в момент
+> завершения drafter-мержей по готовности A+B.
 
 ---
 
-## Контекст (из RCA)
+## Incident addendum (2026-06-15, live) — что произошло и как чинили рантайм
 
-Два независимых дефекта, всплывшие в одном инциденте (недоступность director
-через Telegram).
+Во время работы баг ударил по ЖИВОЙ сессии director (user-facing аутэйдж: ни
+Telegram, ни пиры не достучаться). Диагностика дала **две коррекции к
+первоначальному RCA** (оба симптома — класс registry-десинка, deliverable B/A):
 
-### Симптом A — circle-clobber
-`global-view-<project>` — это НЕ circle, а tmux-сессии, слинкованные с `global`
-(`tmux new-session -d -s global-view-<tag> -t global`, source:
-`system/ops-typed/src/ops_typed/brain_workspace.py:181-187`). Linked/grouped
-tmux-сессии **шарят те же окна и панели**, включая панель director'а.
+### Симптом-инцидент: director залип status=offline при живом WS
+- Запись `repow-global-80bbc633` (director): circle=global (ВЕРНЫЙ),
+  status=offline, pane_id=null. MCP-канал жив (set_description работал).
+- Его ws-hook (pid) имел **ESTABLISHED** WS-сокет к демону и сидел в
+  message-loop, НО демон потерял его из `transport._connections` →
+  `is_connected=False` → `liveness_tick` держал offline и не промоутил.
+- **Корень:** стейл-disconnect гонка — запись снесена из
+  `transport._connections` БЕЗ закрытия сокета. Обе стороны не детектят
+  разрыв: ws-hook ждёт сообщений (TCP keepalive проходит на уровне
+  протокола websockets), демон его не знает, reconnect не триггерится.
+- **Рантайм-починка (без рестарта демона):** запустил свежий ws-hook с env
+  director'а (TMUX_PANE, REPOWIRE_PEER_ID, REPOWIRE_CIRCLE=global) → connect
+  по `peer_id` пошёл в **takeover-ветку** `allocate_and_register` (без
+  singleton-проверки) → status=ONLINE + `transport.connect`. Старый
+  застрявший ws-hook убит (guard по websocket-identity не дал ложного
+  offline). director восстановлен и подтвердил whoami=online@global.
 
-repowire ставит **глобальный** (`-g`) tmux-hook `after-rename-session`
-(`repowire/hooks/tmux_lifecycle.py:54-60`), который на любой rename вызывает
-`tmux_rename_hook.sh` с `list-panes -s` (session-scoped, без `-t`) —
-`repowire/hooks/tmux_rename_hook.sh:15,17`. Хендлер
-`handle_session_renamed` **слепо** переписывает circle каждого peer'а из списка
-панелей в имя новой сессии: `set_peer_circle(peer, new_name)`
-(`repowire/daemon/lifecycle_handler.py:90-95`).
+### Коррекция RCA deliverable A: clobber — это РЕГИСТРАЦИЯ в view-circle, не rename
+- В логе демона (46MB): **НОЛЬ** POST'ов `/hooks/lifecycle/session-renamed`,
+  ноль `Circle updated`/`session_renamed: moved`/`POST /peers/circle`.
+  → Первоначальная гипотеза (clobber через after-rename-session hook +
+  `handle_session_renamed`) **в этом инциденте не подтверждается**.
+- Реальный путь: ws-hook при ПУСТОМ `REPOWIRE_CIRCLE` падает на
+  `circle = get_tmux_info()['session_name']` (websocket_hook.py:513).
+  `get_tmux_info` (_tmux.py:73) делает
+  `tmux display-message -t <pane> '#{session_name}'`, который для pane в
+  **grouped/linked** сессии возвращает имя VIEW-сессии. Проверено живьём:
+  `display-message -t %64` (pane director'а) → `global-view-agents-brain-team`.
+- Подтверждение: peer_id stale-записи
+  `repow-global-view-agents-brain-team-e450f512` по ПРЕФИКСУ кодирует circle
+  РЕГИСТРАЦИИ (формат `repow-<circle>-<hash>`). Та director-сессия
+  спавнилась без `REPOWIRE_CIRCLE` → fallback на имя grouped-сессии →
+  зарегистрировалась в view-circle. Это registration-time, не rename.
 
-Итог: при rename, затрагивающем linked-сессию `global-view-*` (которая шарит
-панель director'а), хендлер уводит director (и brain-admin/librarian — они тоже
-в `global`) из circle `global` в `global-view-agents-brain-team`. Telegram-бот
-роутит сообщения director строго scoped `circle="global"`
-(`repowire/daemon/app.py:148`, `repowire/telegram/bot.py:93,158,529`), lookup
-фильтрует строго `p.circle == circle`
-(`repowire/daemon/peer_registry.py:255-271`) → в `global` остаётся мёртвая
-offline-запись → юзер недоступен. Рестарт поднимает director обратно в `global`
-корректно, но следующий rename снова клоббит.
+### Симптом-класс: singleton-conflict reconnect-storm
+- Лог завален повторяющимся
+  `WebSocket rejected (singleton conflict): Singleton role already online:
+  qa-head-claude-code@project-agents-brain-team`.
+- ws-hook qa-head в reconnect-loop отбивается ghost-записью «online»
+  (status=ONLINE без живого транспорта). Singleton-проверка
+  (websocket.py:158, peer_registry `allocate_and_register`) смотрит на
+  status==ONLINE, а не на `transport.is_connected` → ghost блокирует
+  реальный reconnect навсегда → деградация (CPU/лог).
 
-**Подтверждение вживую (list_peers, 2026-06-15):** в реестре до сих пор висят
-зомби-артефакты — `repow-global-view-agents-brain-team-e450f512`
-(director, circle=global-view-agents-brain-team, offline) и аналогичный
-librarian.
-
-### Симптом B — busy-зомби (reaper)
-Reaper существует: `liveness_tick_loop` каждые 5с
-(`repowire/daemon/app.py:108-111`, `peer_registry.py:1371-1429`), НО сверяет
-статус ТОЛЬКО с WS-коннектом (`transport.is_connected`), не с pane-liveness и
-не с длительностью busy.
-
-`busy` ставится UserPromptSubmit-хуком (`prompt_handler.py:24-29` →
-`websocket.py:244-251`), снимается ТОЛЬКО Stop-хуком (`stop_handler.py:71-79`).
-Панель умерла mid-turn → Stop не сработал → busy не снят. ws-hook — **detached**
-процесс (`session_handler.py:265`, `start_new_session=True`), переживает смерть
-панели и держит WS открытым → `is_connected=True` → `liveness_tick` считает
-peer'а «здоровым» → busy навсегда. Pane умирает — обнаруживается лениво только
-при `kill_peer` (`spawn.py:171-188,300-305` → `Tmux pane not found`).
-
-**Ключевое:** функция `_demote_unsafe_connected_peers`
-(`peer_registry.py:1303-1336`) УЖЕ делает ровно то, что нужно — пингует ws-hook,
-читает `pong.pane_alive` и демотит peer'а с мёртвой панелью. Но вызывается
-только из `lazy_repair` (`peer_registry.py:1263-1279`) — HTTP-триггер,
-debounce 30с. На простаивающем демоне в окне инцидента она не сработала.
+### Применённый рантайм-стопгап (c)
+- Снят tmux-hook `after-rename-session[42]` (belt-and-suspenders). Честно:
+  в инциденте не срабатывал; реальная защита от clobber — наличие
+  `REPOWIRE_CIRCLE`. Авто-восстановится при рестарте демона (install_hooks).
 
 ---
 
-## Fix A — circle-clobber (beads-lyfk, P1)
+## Fix A — circle-мисрегистрация (beads-lyfk, P1)
 
-### Рассмотренные подходы
+### Реальная первопричина
+Сессия, спавнящаяся без `REPOWIRE_CIRCLE`, регистрируется через ws-hook в
+circle = имя grouped view-сессии (`global-view-<project>`), потому что
+`display-message -t <pane>` резолвит pane в shared window-set к attached
+view-сессии, а не к базовой `global`.
 
-**A1 (рекомендую) — guard в хендлере: не трактовать view-сессии как circle.**
-В `handle_session_renamed` пропускать circle-rewrite, если `new_name` —
-не-circle «view»-сессия. Дискриминатор — **имя** (паттерн), вынесенный в конфиг
-(`daemon.tmux.non_circle_session_patterns`, дефолт `["global-view-*"]` или
-шире `["*-view-*"]`).
-
-*Почему имя, а не «is grouped»:* при `new-session -t global -s global-view-X`
-в группу попадают ОБЕ сессии — и base `global`, и view `global-view-X`. Значит
-факт членства в группе НЕ различает base от view; единственный надёжный
-дискриминатор — naming convention view-сессий. Базовые circle (`global`,
-`project-*`) под паттерн не попадают.
-
-- Плюсы: точно бьёт корень; не ломает Tilix UI (view-сессии продолжают жить как
-  tmux-сессии, просто никогда не угоняют circle); минимальный diff (одна
-  проверка + конфиг-поле); обратимо.
-- Минусы: вводит в демон знание о соглашении именования view-сессий (смягчено
-  тем, что это конфиг-поле, не хардкод).
-
-**A2 (defense-in-depth, вторично) — сузить сбор панелей в hook через `-t`.**
-В `after-rename-session` передавать `list-panes -t <renamed-session>` вместо
-session-scoped `-s` без таргета.
-- Плюсы: убирает зависимость от «текущего» контекста hook'а.
-- Минусы: **сам по себе НЕ чинит** — grouped-сессии шарят окна, поэтому
-  `list-panes -t global-view-X` всё равно вернёт общие панели (включая
-  director'а). Полезно только как дополнительная страховка поверх A1.
-
-**A3 (отклонён) — резолвить «домашнюю» сессию панели в хендлере.**
-Для каждой панели определять её сессию через `display-message` и сравнивать с
-`new_name`. Отклонён: для grouped-сессий `#{session_name}` панели неоднозначен —
-ненадёжно.
-
-### Выбранный дизайн A
-**A1 как основной** + **A2 как дешёвая страховка** (defense-in-depth, по
-`systematic-debugging/defense-in-depth.md`):
-
-1. Конфиг-поле `daemon.tmux.non_circle_session_patterns: list[str]`
-   (дефолт `["global-view-*"]`) в `repowire/config/models.py`.
-2. В `handle_session_renamed`: если `new_name` матчит паттерн (fnmatch) —
-   ранний выход с `logger.info`, без `set_peer_circle`. (Сам `LifecycleHandler`
-   получает доступ к паттернам через `peer_registry._config` или явный
-   конструкторный параметр — выбор на этапе плана, предпочтительно явный
-   параметр для чистоты тестирования.)
-3. (A2) В `tmux_lifecycle.py` для `after-rename-session` добавить таргет
-   `-t #{session_name}` в `list-panes` (правка `_HOOKS` + `tmux_rename_hook.sh`,
-   обратносовместимо: `session_name` всё ещё прокидывается).
+### Выбранный дизайн A (defense-in-depth, 3 слоя)
+1. **Гарантировать `REPOWIRE_CIRCLE` для всех спавнов** (основной фикс).
+   `spawn-claude` / `session_handler.py` ДОЛЖНЫ всегда экспортировать
+   `REPOWIRE_CIRCLE` в окружение сессии. Если источник в system-репе
+   (`spawn-claude`) — отдельный per-repo subtask (metadata.repo=system).
+2. **Нормализация fallback в ws-hook** (websocket_hook.py:513): если
+   `REPOWIRE_CIRCLE` пуст, fallback НЕ должен брать имя grouped/view-сессии
+   как circle. Варианты: (а) резолвить базовую сессию группы
+   (`#{session_group}` → канонический member, не view-alias); (б) маппить
+   `global-view-*` → `global` через конфиг-паттерн; (в) при невозможности
+   определить базовый circle — `default`, не view-имя.
+3. **Защита на регистрации в демоне** (`allocate_and_register` /
+   websocket.py connect): не принимать имена, матчащие
+   `daemon.tmux.non_circle_session_patterns` (дефолт `["global-view-*"]`),
+   как circle — нормализовать к базовому или отклонять.
+4. **(вторично) rename-hook guard** — `handle_session_renamed` пропускает
+   view-сессии (на случай, если rename-путь когда-либо активируется).
 
 ### DoD A
-- Rename/создание linked-сессии `global-view-*` больше НЕ перекидывает
-  director/brain-admin/librarian из circle `global`.
-- Юнит-тест на `handle_session_renamed`: peer в circle `global`, прилетает
-  rename с `new_name="global-view-agents-brain-team"` и панелью этого peer'а →
-  circle НЕ меняется; контрольный кейс: легитимный rename базовой сессии →
-  circle меняется как раньше.
-- Tilix two-pane UI не сломан (linked-сессии создаются/работают как прежде).
+- Сессия, спавнящаяся в `global` без явного circle, регистрируется в
+  `global`, а НЕ в `global-view-*`.
+- Юнит: ws-hook fallback при пустом REPOWIRE_CIRCLE + pane в grouped-сессии
+  → circle нормализован к `global`, не `global-view-*`.
+- Юнит: демон отклоняет/нормализует регистрацию с circle=`global-view-*`.
+- Tilix two-pane UI (linked-сессии) не сломан.
 
 ---
 
-## Fix B — hardening reaper (beads-nxxm, P2)
+## Fix B — hardening reaper/registry: весь класс десинка (beads-nxxm, P2)
 
-### Рассмотренные подходы
+Директор: B должен лечить ВЕСЬ класс, не один симптом. Три подтверждённых
+механизма десинка:
 
-**B1 (рекомендую) — периодический pane-liveness sweep, переиспользуя
-`_demote_unsafe_connected_peers`.**
-Добавить фоновый цикл (отдельный, медленнее `liveness_tick`), который вызывает
-уже существующую и протестированную `_demote_unsafe_connected_peers` на cadence
-~30с. Она пингует ws-hook, читает `pane_alive`, демотит мёртвых.
-- Плюсы: закрывает корень (периодическая сверка с реальной панелью) минимальным
-  кодом; переиспользует протестированную функцию; cadence ограничивает нагрузку.
-- Минусы: до 30с задержки обнаружения зомби (приемлемо vs текущие ∞).
+### B-1: стейл-disconnect гонка (zombie half-open) — корень director-инцидента
+Запись сносится из `transport._connections` без закрытия сокета → ws-hook
+залипает в message-loop, демон его не знает, reconnect не триггерится.
+**Фикс:** при любом удалении соединения (`transport.disconnect`,
+`mark_offline`, ghost-демоут) — **закрывать underlying websocket**, чтобы
+клиентский reconnect-loop сработал. Доп.: ws-hook периодически
+верифицирует, что он ещё в реестре (app-level heartbeat «registered?», а не
+только TCP keepalive); при «not registered» — реконнект.
 
-**B2 — встроить pane-ping в `liveness_tick` каждые 5с.**
-- Плюсы: быстрее (≤5с).
-- Минусы: пинг ВСЕХ ONLINE/BUSY peer'ов каждые 5с — заметная нагрузка на
-  больших mesh; смешивает дешёвую WS-сверку с дорогой pane-сверкой.
+### B-2: singleton-conflict reconnect-storm (ghost online) — корень qa-head storm
+Singleton-проверка смотрит на `status==ONLINE`, не на живой транспорт →
+ghost-запись блокирует reconnect реального singleton-peer'а.
+**Фикс:** singleton-проверка (websocket.py:158, `allocate_and_register`)
+должна считать «занято» ТОЛЬКО если держатель `transport.is_connected`.
+Ghost (online без WS) → разрешить takeover / демоутить ghost перед проверкой.
 
-**B3 — `busy_since` + busy-timeout как триггер пинга.**
-Добавить поле `busy_since` в `Peer` (ставится при переходе в BUSY); в цикле
-пинговать pane-liveness ТОЛЬКО для peer'ов, висящих busy дольше
-`busy_timeout`. Демотить лишь при реально мёртвой панели.
-- Плюсы: самый таргетный (пинги только подозрительных); `busy_since` — полезная
-  телеметрия; **никогда не убивает легитимно-долгий, но живой turn** (пинг
-  подтверждает жизнь панели).
-- Минусы: новое поле в модели + миграция персиста маппингов.
-
-### Выбранный дизайн B
-**B1 как основа** + **`busy_since` из B3 как дешёвое наблюдаемое улучшение**:
-
-1. Поле `Peer.busy_since: datetime | None` (`protocol/peers.py`), ставится в
-   `_set_peer_status` при переходе в BUSY, сбрасывается при выходе из BUSY.
-   Обратносовместимо в персисте (Optional, дефолт None).
-2. Новый фоновый цикл `unsafe_sweep_loop(interval_sec=30.0)` рядом с
-   `liveness_tick_loop`, запускается в `app.py` lifespan; вызывает
-   `_demote_unsafe_connected_peers`.
-3. (Опционально, по решению на этапе плана) гейтить дорогой pane-ping в sweep
-   на peer'ах с `busy_since` старше `daemon.busy_probe_after_sec` (дефолт ~120с),
-   чтобы не пинговать только что начавшиеся turn'ы. ONLINE-peer'ы пингуются по
-   обычной cadence.
-4. Конфиг: `daemon.unsafe_sweep_interval_sec` (дефолт 30),
-   `daemon.busy_probe_after_sec` (дефолт 120).
-
-> Важно: busy-длительность — это **триггер проверки**, а НЕ критерий эвикции.
-> Демотим только при подтверждённо мёртвой панели (`pane_alive=False`). Это
-> исключает убийство медленного, но живого turn'а.
+### B-3: busy-зомби + отсутствие pane-liveness на таймере (исходный B)
+- `busy` снимается только Stop-хуком; pane умер mid-turn → busy навсегда.
+- `liveness_tick` (5с) сверяет только WS-коннект; pane-ping sweep
+  (`_demote_unsafe_connected_peers`) только лениво (HTTP, debounce 30с).
+**Фикс:** периодический pane-liveness sweep (новый цикл ~30с) переиспользует
+`_demote_unsafe_connected_peers`; поле `Peer.busy_since` (телеметрия +
+триггер пинга, НЕ критерий эвикции — не убиваем живой долгий turn);
+reaping осиротевших ws-hook (сверка `pane_id` с `tmux list-panes`).
 
 ### DoD B
-- Busy-зомби после смерти панели автоматически уходит в OFFLINE за
-  ≤ `unsafe_sweep_interval_sec` без ручного `kill_peer`.
-- Юнит/интеграционный тест: peer BUSY + ws-hook рапортует `pane_alive=False` →
-  периодический sweep демотит в OFFLINE + disconnect; контроль: живой busy-peer
-  (`pane_alive=True`) НЕ демотится.
-- Нет регресса нагрузки на дешёвом `liveness_tick` (он не трогается).
+- B-1: запись, снятая из `_connections`, закрывает сокет → клиент
+  реконнектится → online за ≤ reconnect-интервал, без ручного relaunch.
+- B-2: ghost online-запись (без транспорта) НЕ блокирует reconnect
+  singleton-peer'а; storm не воспроизводится.
+- B-3: busy-зомби после смерти панели уходит offline за ≤ sweep-интервал.
+- Юнит/интеграционные тесты на каждый из B-1/B-2/B-3.
 
 ---
 
-## План отгрузки и рестарта
+## Декомпозиция по репам
+- beads-lyfk (A) + beads-nxxm (B) → **repowire-fork** (демон + ws-hook).
+- Слой A-1 (гарантия REPOWIRE_CIRCLE в `spawn-claude`) может затронуть
+  **system** — если так, отдельный per-repo subtask (metadata.repo=system).
+- twwz (gsd-dev 403) — отдельный слой (allowed_commands), едет в том же
+  restart-окне без brainstorm.
 
-- **A приоритетнее B** (A — фикс аутэйджа). Дефолт — A+B одним
-  протестированным изменением (ветка `fix/q2ok-circle-reaper`) + ОДИН
-  координированный рестарт демона. Если дизайн/реализация B затянется —
-  отгрузить A (+ twwz) первым restart-окном, B — вторым.
-- **twwz (gsd-dev 403)** едет в том же restart-окне (config-строка
-  `spawn-claude gsd-dev` в `~/.repowire/config.yaml` + сверка формата
-  prefix-allowlist в `spawn.py`), без отдельного brainstorm. Отдельный слой,
-  общего корня с A/B нет.
-- **Рестарт-окно** (CRITICAL): только ПОСЛЕ (1) greenlight director'а по этому
-  дизайну, (2) drafter-pm домержил #96→#95 и завершил wupw, (3) director
-  предупредил юзера. Рестарт оборвёт коннекты, включая сессию самого director'а.
-- **Реализация** делегируется devops-worker (ветка/worktree
-  `fix/q2ok-circle-reaper`); PR держится ОТКРЫТЫМ до greenlight; merge+рестарт —
-  по команде director'а.
+## План отгрузки/рестарта (по решению director'а)
+- Порядок: рестарт ТОЛЬКО после drafter-pm #96→#95+wupw. go/no-go +
+  предупреждение юзера — за director'ом; devops-head предлагает окно.
+- one-vs-two рестартов — решаем в момент завершения drafter-мержей по
+  готовности A+B. Если A+B готовы → один рестарт (state-rebuild + деплой).
+  Если нет → state-rebuild рестарт тогда же (снимет storm+десинк+зомби),
+  деплой A+B вторым окном.
+- Как только A+B имплементационно готовы — пинг director'у для бандлинга.
+- Мониторинг qa-head storm: если деградирует демон до drafter-мержей —
+  эскалация (director пересмотрит приоритет окна).
 
-## Открытые вопросы к director (checkpoint)
-1. A: достаточно ли `non_circle_session_patterns=["global-view-*"]`, или сразу
-   шире `["*-view-*"]` на случай новых view-семейств?
-2. B: cadence sweep 30с приемлема, или нужно быстрее (с учётом нагрузки)?
-3. Запускать ли реализацию через devops-worker СЕЙЧАС (PR откроется, merge
-   подождёт greenlight), или ждать твоего ОК по дизайну перед спавном воркера?
+## Открытые вопросы к director (checkpoint, перед имплементацией кодом)
+1. A-слой нормализации: маппинг `global-view-*`→`global` по паттерну
+   (просто) vs резолв базовой сессии группы через `#{session_group}`
+   (общее, но сложнее)?
+2. B-1: закрывать сокет на стороне демона при disconnect — ОК как основной
+   механизм, или предпочитаешь ws-hook app-heartbeat?
+3. Запускать имплементацию через devops-worker сейчас (PR откроется, merge
+   ждёт greenlight + restart-окно), или сперва твой ОК по этому ревизованному
+   дизайну?
