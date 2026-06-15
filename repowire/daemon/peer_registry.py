@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
-from repowire.naming import build_base_display_name, sanitize_folder_name
+from repowire.naming import build_base_display_name, normalize_circle, sanitize_folder_name
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 if TYPE_CHECKING:
@@ -349,6 +349,27 @@ class PeerRegistry:
 
             # Singleton roles must never get a '-2' suffix — reject instead.
             if self._is_singleton_role(path):
+                # A singleton name is only truly occupied when the holder has a
+                # LIVE transport. A ghost — ONLINE in the registry but dropped
+                # from the transport (the B-1 half-open) — must NOT block the
+                # real peer's reconnect (q2ok reconnect-storm). Prune the ghost
+                # and let this registration take the name over. When no
+                # transport is wired (transport is None) we cannot prove a
+                # ghost, so we conservatively keep the reject.
+                holder_is_ghost = (
+                    self._transport is not None
+                    and not self._transport.is_connected(sid)
+                )
+                if holder_is_ghost:
+                    del self._peers[sid]
+                    self._mappings.pop(sid, None)
+                    self._mappings_dirty = True
+                    logger.info(
+                        "Pruned ghost singleton holder %s (%s) — ONLINE but no "
+                        "live transport; allowing reconnect takeover",
+                        candidate, sid,
+                    )
+                    return candidate
                 raise ValueError(
                     f"Singleton role already online: {candidate}@{circle}"
                 )
@@ -655,7 +676,15 @@ class PeerRegistry:
         stored role is preserved rather than overwritten with a default —
         historically that default forced AGENT and silently demoted
         orchestrator/service peers on every reconnect.
+
+        ``circle`` is normalized before any registration work: a pane in a
+        grouped/linked tmux session can resolve to a ``<base>-view-<suffix>``
+        session name, and a client (old ws-hook, non-standard spawn) may send
+        that raw as the circle. Collapsing it here — the single chokepoint for
+        every registration path — guarantees the daemon never stores a peer in
+        a view-circle (q2ok outage defense-in-depth, beads-lyfk A-task-2).
         """
+        circle = normalize_circle(circle) or circle
         async with self._lock:
             # Reconnect: if caller provides a peer_id that exists, take over
             if peer_id and peer_id in self._peers:
@@ -716,7 +745,11 @@ class PeerRegistry:
             if pane_id:
                 self._release_pane(pane_id, allocated_id)
 
-            effective_role = effective_role_for_mapping if effective_role_for_mapping is not None else self._mappings[allocated_id].role
+            effective_role = (
+                effective_role_for_mapping
+                if effective_role_for_mapping is not None
+                else self._mappings[allocated_id].role
+            )
 
             # --- create and insert Peer ---
             peer = Peer(
@@ -1428,6 +1461,32 @@ class PeerRegistry:
             logger.info("liveness_tick_loop cancelled")
             raise
 
+    async def unsafe_sweep_loop(self, interval_sec: float = 30.0) -> None:
+        """Background loop that pane-pings connected peers every interval_sec.
+
+        Reuses ``_demote_unsafe_connected_peers`` (pings each connected
+        ONLINE/BUSY tmux peer; marks OFFLINE + disconnects any whose pane is
+        gone). This reaps BUSY-zombies whose pane died mid-turn — the Stop hook
+        that would clear BUSY never fires once the pane is dead (B-3). Runs on a
+        fixed timer, separate from the cheaper WS-only liveness_tick, so the 5s
+        tick is not burdened with pane-ping cost.
+
+        Cancelled via asyncio.CancelledError on daemon shutdown. Individual
+        sweep errors are logged and swallowed so the loop survives a transient
+        failure — the sweep is best-effort reconciliation.
+        """
+        logger.info("unsafe_sweep_loop started (interval=%.1fs)", interval_sec)
+        try:
+            while True:
+                try:
+                    await self._demote_unsafe_connected_peers()
+                except Exception:
+                    logger.exception("unsafe sweep failed; continuing")
+                await asyncio.sleep(interval_sec)
+        except asyncio.CancelledError:
+            logger.info("unsafe_sweep_loop cancelled")
+            raise
+
     async def _do_repair(self) -> None:
         """Ping/pong liveness check. Must hold _repair_lock."""
         transport = self._transport
@@ -1496,6 +1555,10 @@ def _set_peer_status(peer: Any, status: PeerStatus) -> None:
     counts from the FIRST drop, not the most recent re-confirm).
 
     ONLINE/BUSY: clear offline_since (peer is live again).
+
+    BUSY: stamp busy_since IF this is a new transition into BUSY (preserves
+    the original timestamp on re-BUSY no-op so the pane-liveness sweep can
+    reason from the FIRST BUSY transition). Any non-BUSY status clears it.
     """
     now = datetime.now(timezone.utc)
     if status == PeerStatus.OFFLINE:
@@ -1503,5 +1566,10 @@ def _set_peer_status(peer: Any, status: PeerStatus) -> None:
             peer.offline_since = now
     else:
         peer.offline_since = None
+    if status == PeerStatus.BUSY:
+        if peer.status != PeerStatus.BUSY or peer.busy_since is None:
+            peer.busy_since = now
+    else:
+        peer.busy_since = None
     peer.status = status
     peer.last_seen = now

@@ -25,3 +25,23 @@ def _isolate_interrupts_jsonl(monkeypatch, tmp_path):
         "REPOWIRE_INTERRUPT_LOG",
         str(tmp_path / "autouse-interrupts.jsonl"),
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_daemon_target(monkeypatch):
+    """q2ok: never let a test reach the *live* daemon (default 127.0.0.1:8377).
+
+    Hook helpers (`_daemon_post`, the ws-hook `main()` connect) fall back to
+    ``127.0.0.1:8377`` when ``REPOWIRE_DAEMON_HOST/PORT`` are unset — the
+    production daemon. A test exercising ``handle_message``'s auto-ACK path
+    without mocking ``_daemon_post`` (e.g. tests/hooks/test_websocket_hook_interrupt.py)
+    would POST a synthetic AUTO-ACK to that production daemon, which then injects
+    it into a *live* peer's tmux pane — observed in the q2ok incident as
+    placeholder ``notif-aaaaaaaa`` AUTO-ACKs landing in director's pane.
+
+    Point the default at an unroutable loopback port so any unmocked post/connect
+    fails fast and locally (auto-ACK is best-effort and swallows the error).
+    Tests that need a real local target still override these vars themselves.
+    """
+    monkeypatch.setenv("REPOWIRE_DAEMON_HOST", "127.0.0.1")
+    monkeypatch.setenv("REPOWIRE_DAEMON_PORT", "1")

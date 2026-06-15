@@ -7,6 +7,32 @@ from pathlib import Path
 
 from repowire.config.models import AgentType
 
+# A pane attached to a grouped/linked tmux session (e.g. Tilix two-pane UI)
+# resolves ``#{session_name}`` to the *view* session, conventionally named
+# ``<base>-view-<suffix>`` (observed: ``global-view-agents-brain-team``). The
+# circle is the *base* session, never the view alias.
+_VIEW_SESSION_MARKER = "-view-"
+
+
+def normalize_circle(session_name: str | None) -> str | None:
+    """Collapse a grouped-session *view* name to its base circle.
+
+    ``<base>-view-<suffix>`` -> ``<base>`` (e.g.
+    ``global-view-agents-brain-team`` -> ``global``). Names without the view
+    marker are returned unchanged, as are malformed names with an empty base
+    or suffix (so they surface rather than silently mapping to "").
+
+    Shared by the ws-hook circle fallback (registration-time client side) and
+    the daemon's ``allocate_and_register`` guard (defense-in-depth, server
+    side), so both layers agree on what a view-circle collapses to.
+    """
+    if not session_name:
+        return session_name
+    base, marker, suffix = session_name.partition(_VIEW_SESSION_MARKER)
+    if marker and base and suffix:
+        return base
+    return session_name
+
 
 def sanitize_folder_name(name: str) -> str:
     """Sanitize an arbitrary folder name for use in a peer display_name.

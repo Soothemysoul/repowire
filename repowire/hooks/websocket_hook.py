@@ -28,7 +28,7 @@ except ImportError as e:
 
 from repowire.config.models import AgentType
 from repowire.hooks._identity import resolve_agent_path
-from repowire.hooks._tmux import get_tmux_info
+from repowire.hooks._tmux import get_tmux_info, normalize_circle
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
     get_display_name,
@@ -486,7 +486,9 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
         if websocket:
             try:
                 tmux_info = await asyncio.to_thread(get_tmux_info)
-                pong_circle = os.environ.get("REPOWIRE_CIRCLE") or tmux_info["session_name"]
+                pong_circle = os.environ.get("REPOWIRE_CIRCLE") or normalize_circle(
+                    tmux_info["session_name"]
+                )
                 await websocket.send(
                     json.dumps(
                         {
@@ -510,7 +512,11 @@ async def main() -> int:
         logger.error("TMUX_PANE not set")
         return 1
 
-    circle = os.environ.get("REPOWIRE_CIRCLE") or get_tmux_info()["session_name"] or "default"
+    circle = (
+        os.environ.get("REPOWIRE_CIRCLE")
+        or normalize_circle(get_tmux_info()["session_name"])
+        or "default"
+    )
     display_name = get_display_name()
     backend_str = os.environ.get("REPOWIRE_BACKEND", "claude-code")
     try:

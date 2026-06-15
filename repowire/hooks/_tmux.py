@@ -7,6 +7,13 @@ import shutil
 import subprocess
 from typing import TypedDict
 
+# ``normalize_circle`` lives in ``repowire.naming`` (shared by the daemon's
+# registration guard) and is re-exported here for the ws-hook call sites and
+# their tests, which import it from this module.
+from repowire.naming import normalize_circle
+
+__all__ = ["normalize_circle"]
+
 
 class TmuxInfo(TypedDict):
     """Tmux environment information.
