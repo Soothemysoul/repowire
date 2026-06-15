@@ -349,6 +349,27 @@ class PeerRegistry:
 
             # Singleton roles must never get a '-2' suffix — reject instead.
             if self._is_singleton_role(path):
+                # A singleton name is only truly occupied when the holder has a
+                # LIVE transport. A ghost — ONLINE in the registry but dropped
+                # from the transport (the B-1 half-open) — must NOT block the
+                # real peer's reconnect (q2ok reconnect-storm). Prune the ghost
+                # and let this registration take the name over. When no
+                # transport is wired (transport is None) we cannot prove a
+                # ghost, so we conservatively keep the reject.
+                holder_is_ghost = (
+                    self._transport is not None
+                    and not self._transport.is_connected(sid)
+                )
+                if holder_is_ghost:
+                    del self._peers[sid]
+                    self._mappings.pop(sid, None)
+                    self._mappings_dirty = True
+                    logger.info(
+                        "Pruned ghost singleton holder %s (%s) — ONLINE but no "
+                        "live transport; allowing reconnect takeover",
+                        candidate, sid,
+                    )
+                    return candidate
                 raise ValueError(
                     f"Singleton role already online: {candidate}@{circle}"
                 )

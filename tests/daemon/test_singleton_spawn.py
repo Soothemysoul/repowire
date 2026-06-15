@@ -311,7 +311,14 @@ class TestSingletonSpawnDedup:
 class TestSingletonRegistryReject:
     @pytest.mark.asyncio
     async def test_singleton_role_raises_on_online_collision(self, tmp_path) -> None:
-        """_build_display_name must raise ValueError for singleton collision (not suffix -2)."""
+        """_build_display_name must raise ValueError for a singleton collision
+        with a LIVE holder (not suffix -2).
+
+        Post-B-2 the holder must have a live transport to count as occupied — a
+        ghost (ONLINE without transport) is taken over instead of rejected (see
+        test_singleton_ghost_takeover.py). So connect the first peer's transport
+        before asserting the reject.
+        """
         cfg = Config()
         transport = WebSocketTransport()
         tracker = QueryTracker()
@@ -324,12 +331,14 @@ class TestSingletonRegistryReject:
             persistence_path=tmp_path / "sessions.json",
         )
 
-        # Register first peer
-        await registry.allocate_and_register(
+        # Register first peer and give it a LIVE transport connection.
+        peer_id, _ = await registry.allocate_and_register(
             circle="default",
             backend=AgentType.CLAUDE_CODE,
             path="/home/user/devops-head",
         )
+        await transport.connect(peer_id, AsyncMock())
+        assert transport.is_connected(peer_id)
 
         # Second registration for same singleton path/circle → must raise ValueError
         with pytest.raises(ValueError, match="Singleton role already online"):
