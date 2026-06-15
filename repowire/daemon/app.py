@@ -109,6 +109,10 @@ def create_app(
             peer_registry.liveness_tick_loop(),
             name="peer_registry.liveness_tick_loop",
         )
+        unsafe_sweep_task = asyncio.create_task(
+            peer_registry.unsafe_sweep_loop(cfg.daemon.unsafe_sweep_interval_sec),
+            name="peer_registry.unsafe_sweep_loop",
+        )
         init_deps(
             cfg, peer_registry, app.state,
             lifecycle_handler=lifecycle_handler,
@@ -169,6 +173,12 @@ def create_app(
         liveness_task.cancel()
         try:
             await liveness_task
+        except asyncio.CancelledError:
+            pass
+
+        unsafe_sweep_task.cancel()
+        try:
+            await unsafe_sweep_task
         except asyncio.CancelledError:
             pass
 

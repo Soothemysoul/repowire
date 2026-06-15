@@ -74,6 +74,15 @@ class Peer(BaseModel):
             "marked OFFLINE."
         ),
     )
+    busy_since: datetime | None = Field(
+        None,
+        description=(
+            "Timestamp of most recent transition to BUSY. None when not BUSY. "
+            "Telemetry for the periodic pane-liveness sweep (B-3) to reason about "
+            "long-running turns — NOT an eviction criterion (a live long turn must "
+            "never be killed; the sweep evicts only on a dead pane)."
+        ),
+    )
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     description: str = Field(default="", description="Current task description (self-reported)")
 

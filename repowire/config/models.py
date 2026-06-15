@@ -163,6 +163,14 @@ class DaemonConfig(BaseModel):
     auto_reconnect: bool = Field(default=True, description="Auto-reconnect on disconnect")
     heartbeat_interval: int = Field(default=30, description="Heartbeat interval in seconds")
 
+    # Periodic pane-liveness sweep (B-3): reap BUSY-zombie peers whose tmux pane
+    # died mid-turn. Runs the pane-ping reaper on a fixed timer, separate from
+    # the cheap WS-only liveness_tick (which stays at 5s) so pane-ping load is
+    # not added to that hot path.
+    unsafe_sweep_interval_sec: float = Field(
+        default=30, description="Interval for the periodic pane-liveness sweep (seconds)",
+    )
+
     # Session cleanup
     prune_max_age_hours: float = Field(
         default=24, description="Remove session mappings and offline peers older than this",

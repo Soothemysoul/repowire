@@ -1457,6 +1457,32 @@ class PeerRegistry:
             logger.info("liveness_tick_loop cancelled")
             raise
 
+    async def unsafe_sweep_loop(self, interval_sec: float = 30.0) -> None:
+        """Background loop that pane-pings connected peers every interval_sec.
+
+        Reuses ``_demote_unsafe_connected_peers`` (pings each connected
+        ONLINE/BUSY tmux peer; marks OFFLINE + disconnects any whose pane is
+        gone). This reaps BUSY-zombies whose pane died mid-turn — the Stop hook
+        that would clear BUSY never fires once the pane is dead (B-3). Runs on a
+        fixed timer, separate from the cheaper WS-only liveness_tick, so the 5s
+        tick is not burdened with pane-ping cost.
+
+        Cancelled via asyncio.CancelledError on daemon shutdown. Individual
+        sweep errors are logged and swallowed so the loop survives a transient
+        failure — the sweep is best-effort reconciliation.
+        """
+        logger.info("unsafe_sweep_loop started (interval=%.1fs)", interval_sec)
+        try:
+            while True:
+                try:
+                    await self._demote_unsafe_connected_peers()
+                except Exception:
+                    logger.exception("unsafe sweep failed; continuing")
+                await asyncio.sleep(interval_sec)
+        except asyncio.CancelledError:
+            logger.info("unsafe_sweep_loop cancelled")
+            raise
+
     async def _do_repair(self) -> None:
         """Ping/pong liveness check. Must hold _repair_lock."""
         transport = self._transport
@@ -1525,6 +1551,10 @@ def _set_peer_status(peer: Any, status: PeerStatus) -> None:
     counts from the FIRST drop, not the most recent re-confirm).
 
     ONLINE/BUSY: clear offline_since (peer is live again).
+
+    BUSY: stamp busy_since IF this is a new transition into BUSY (preserves
+    the original timestamp on re-BUSY no-op so the pane-liveness sweep can
+    reason from the FIRST BUSY transition). Any non-BUSY status clears it.
     """
     now = datetime.now(timezone.utc)
     if status == PeerStatus.OFFLINE:
@@ -1532,5 +1562,10 @@ def _set_peer_status(peer: Any, status: PeerStatus) -> None:
             peer.offline_since = now
     else:
         peer.offline_since = None
+    if status == PeerStatus.BUSY:
+        if peer.status != PeerStatus.BUSY or peer.busy_since is None:
+            peer.busy_since = now
+    else:
+        peer.busy_since = None
     peer.status = status
     peer.last_seen = now
