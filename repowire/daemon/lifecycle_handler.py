@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from repowire.hooks.utils import clear_pane_runtime_state
+from repowire.naming import normalize_circle
 
 if TYPE_CHECKING:
     from repowire.daemon.peer_registry import PeerRegistry
@@ -87,6 +88,19 @@ class LifecycleHandler:
 
         Returns number of peers updated.
         """
+        # A grouped/linked tmux session (Tilix two-pane UI) emits an
+        # after-rename-session event whose new_name is the *view* alias
+        # (<base>-view-<suffix>), not a real circle change. Moving peers onto
+        # that view name is the q2ok clobber path — director/brain-admin would
+        # be yanked out of circle ``global`` and become unreachable. A view
+        # rename is never a legitimate circle change, so skip it entirely.
+        # (normalize_circle changes the name only for view aliases.)
+        if normalize_circle(new_name) != new_name:
+            logger.debug(
+                "session_renamed: ignoring view-session rename → %s", new_name,
+            )
+            return 0
+
         async def _rename(pane_id: str) -> bool:
             peer = await self._registry.get_peer_by_pane(pane_id)
             if peer and peer.circle != new_name:
