@@ -67,19 +67,33 @@ class WebSocketTransport:
             True if the connection was actually removed, False if skipped (already replaced).
         """
         async with self._lock:
-            if session_id in self._connections:
-                if (
-                    websocket is not None
-                    and self._connections[session_id].websocket is not websocket
-                ):
-                    logger.debug(
-                        f"Skipping disconnect for {session_id}: websocket already replaced"
-                    )
-                    return False
-                self._connections.pop(session_id)
-                logger.info(f"Unregistered connection for {session_id}")
-                return True
-            return False
+            if session_id not in self._connections:
+                return False
+            if (
+                websocket is not None
+                and self._connections[session_id].websocket is not websocket
+            ):
+                logger.debug(
+                    f"Skipping disconnect for {session_id}: websocket already replaced"
+                )
+                return False
+            removed = self._connections.pop(session_id)
+            logger.info(f"Unregistered connection for {session_id}")
+
+        # Close the removed socket OUTSIDE the lock (close may await on I/O).
+        # This is the q2ok zombie half-open fix: a connection dropped from
+        # _connections without closing its socket left the ws-hook blocked in
+        # its message-loop with the daemon unaware, so the client never
+        # reconnected. Closing forces the client's reconnect-loop to fire.
+        # Best-effort — the socket may already be dead (client gone), in which
+        # case close() raises and we simply swallow it; the record is gone.
+        try:
+            await removed.websocket.close()
+        except Exception as e:
+            logger.debug(
+                f"disconnect: close() for {session_id} failed (socket already dead?): {e}"
+            )
+        return True
 
     async def send(self, session_id: str, message: dict[str, Any]) -> None:
         """Send JSON message via WebSocket.
