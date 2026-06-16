@@ -60,6 +60,40 @@ def _compute_backoff(attempt: int, cap: float = _RECONNECT_CAP_SEC, base: float 
     return random.uniform(0.0, ceiling)
 
 
+# Mirror agent-gateway._check_marker freshness window. A marker older than this
+# is treated as crash-after-write, not an intentional signal.
+_INTENTIONAL_MARKER_MAX_AGE_SEC = 300
+
+
+def _marker_dir(role: str):
+    """marker directory for a role: $HOME/ai-infra/ops/<role>/."""
+    from pathlib import Path
+
+    return Path(os.path.expanduser("~")) / "ai-infra" / "ops" / role
+
+
+def _marker_present(role: str | None) -> bool:
+    """Peek (no unlink) for a fresh intentional shutdown/restart marker.
+
+    PEEK-ONLY: the marker is one-shot consumed by agent-gateway.monitor_loop;
+    the hook must NOT unlink it. Returns True iff a fresh (<300s)
+    .shutdown-intentional or .restart-intentional exists for `role`.
+    role=None (no role env, see Task 0) → False (degrade to pane-safety only).
+    """
+    if not role:
+        return False
+    base = _marker_dir(role)
+    for name in (".shutdown-intentional", ".restart-intentional"):
+        marker = base / name
+        try:
+            age = time.time() - marker.stat().st_mtime
+        except (FileNotFoundError, OSError):
+            continue
+        if age <= _INTENTIONAL_MARKER_MAX_AGE_SEC:
+            return True
+    return False
+
+
 class PaneUnsafeError(RuntimeError):
     """Raised when the pane no longer belongs to the expected live agent."""
 
