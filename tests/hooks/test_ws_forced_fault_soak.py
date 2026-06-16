@@ -184,13 +184,13 @@ async def test_default_backoff_survives_250s_outage(tmp_path, monkeypatch):
         # ~280s. The hard cap only trips if the hook genuinely STOPPED (the
         # regression we're hunting). Avoids the boundary flakiness of asserting
         # a fixed-window last-timestamp.
-        TARGET = 250.0
-        HARD_CAP = 330.0
-        while attempts["last_ts"] - outage_start <= TARGET:
-            if asyncio.get_event_loop().time() - outage_start > HARD_CAP:
+        target = 250.0
+        hard_cap = 330.0
+        while attempts["last_ts"] - outage_start <= target:
+            if asyncio.get_event_loop().time() - outage_start > hard_cap:
                 break
             await asyncio.sleep(1.0)
-        assert attempts["last_ts"] > outage_start + TARGET, (
+        assert attempts["last_ts"] > outage_start + target, (
             "hook stopped issuing connects inside the >250s window — "
             "did the unbounded fix regress to a finite cap?"
         )
@@ -270,7 +270,9 @@ async def test_iptables_drop_then_recover(tmp_path, monkeypatch):
     # Compress backoff so recovery after revert is quick. Env-var is bound at
     # import time → ineffective; patch _compute_backoff directly (cap ~1s).
     real_backoff = wh._compute_backoff
-    monkeypatch.setattr(wh, "_compute_backoff", lambda attempt, *a, **k: real_backoff(attempt, cap=1.0))
+    monkeypatch.setattr(
+        wh, "_compute_backoff", lambda attempt, *a, **k: real_backoff(attempt, cap=1.0)
+    )
 
     real_connect = wh.websockets.connect
     attempts = {"n": 0}
@@ -378,7 +380,9 @@ async def test_reconnect_storm_is_jittered(tmp_path, monkeypatch):
     # Preserve full jitter, compress the ceiling so the spread is observable in
     # a CI-friendly window: uniform(0, min(4, 2**attempt)).
     real_backoff = wh._compute_backoff
-    monkeypatch.setattr(wh, "_compute_backoff", lambda attempt, *a, **k: real_backoff(attempt, cap=4.0))
+    monkeypatch.setattr(
+        wh, "_compute_backoff", lambda attempt, *a, **k: real_backoff(attempt, cap=4.0)
+    )
 
     # Per-task identity: main() reads get_display_name()/resolve_agent_path()
     # (bare names in wh globals) → redirect them to a contextvar set per task.
@@ -386,7 +390,7 @@ async def test_reconnect_storm_is_jittered(tmp_path, monkeypatch):
     monkeypatch.setattr(wh, "get_display_name", lambda: _ident.get()["name"])
     monkeypatch.setattr(wh, "resolve_agent_path", lambda: _ident.get()["path"])
 
-    N = 8
+    n_peers = 8
 
     async def _run_one(i: int):
         p = tmp_path / f"peer{i}"
@@ -396,16 +400,16 @@ async def test_reconnect_storm_is_jittered(tmp_path, monkeypatch):
 
     daemon = _LiveDaemon(create_test_app(persistence_path=persistence), port)
     daemon.start()
-    tasks = [asyncio.create_task(_run_one(i)) for i in range(N)]
+    tasks = [asyncio.create_task(_run_one(i)) for i in range(n_peers)]
     try:
-        # 1. Bring all N online.
+        # 1. Bring all peers online.
         deadline = asyncio.get_event_loop().time() + 20.0
         while True:
             online = await _online_peer_ids(port)
-            if len(online) >= N:
+            if len(online) >= n_peers:
                 break
             if asyncio.get_event_loop().time() > deadline:
-                raise TimeoutError(f"only {len(online)}/{N} peers came online")
+                raise TimeoutError(f"only {len(online)}/{n_peers} peers came online")
             await asyncio.sleep(0.1)
 
         # 2. Kill the daemon; let all N enter the reconnect loop (attempts climb
@@ -417,8 +421,8 @@ async def test_reconnect_storm_is_jittered(tmp_path, monkeypatch):
         daemon2 = _LiveDaemon(create_test_app(persistence_path=persistence), port)
         daemon2.start()
         try:
-            times = await _capture_reconnect_times(port, expected=N, timeout=30.0)
-            assert len(times) == N, f"only {len(times)}/{N} peers reconnected"
+            times = await _capture_reconnect_times(port, expected=n_peers, timeout=30.0)
+            assert len(times) == n_peers, f"only {len(times)}/{n_peers} peers reconnected"
             spread = max(times) - min(times)
             assert spread > 0.5, (
                 f"reconnects not jittered (spread={spread:.3f}s) — herd risk"
@@ -628,6 +632,6 @@ def test_marker_guard_stale_marker_allows_respawn(tmp_path, monkeypatch):
 
     monkeypatch.setattr(wh, "main", _fake_main_async)
 
-    rc = wh.supervise()
+    wh.supervise()
     assert calls["n"] >= 2, "stale marker wrongly honored — supervise did not respawn"
     assert marker.exists(), "stale marker must still not be consumed (peek-only)"
