@@ -88,3 +88,48 @@ def test_pane_warn_clear_resets_indicator(monkeypatch):
 
 def test_warn_threshold_constant_present():
     assert isinstance(wh._WARN_AFTER_ATTEMPTS, int) and wh._WARN_AFTER_ATTEMPTS >= 1
+
+
+# --- Task 2: unbounded reconnect loop + pane-safety guard in main() ----------
+
+
+@pytest.mark.asyncio
+async def test_main_stops_reconnecting_when_pane_unsafe(monkeypatch):
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    # pane unsafe from the start → main must return 0 without infinite loop
+    monkeypatch.setattr(wh, "_is_pane_safe", lambda pane_id: False)
+    monkeypatch.setattr(wh, "_get_pane_command", lambda pane_id: "claude")
+    monkeypatch.setattr(wh, "get_display_name", lambda: "devops-head-claude-code")
+    monkeypatch.setattr(wh, "_compute_backoff", lambda *a, **k: 0.0)
+    rc = await asyncio.wait_for(wh.main(), timeout=2.0)
+    assert rc == 0
+
+
+@pytest.mark.asyncio
+async def test_main_retries_past_old_50_cap(monkeypatch):
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    monkeypatch.setattr(wh, "get_display_name", lambda: "devops-head-claude-code")
+    monkeypatch.setattr(wh, "_get_pane_command", lambda pane_id: "claude")
+    monkeypatch.setattr(wh, "_compute_backoff", lambda *a, **k: 0.0)
+    monkeypatch.setattr(wh, "_pane_warn_set", lambda pane_id: None)
+    monkeypatch.setattr(wh, "_pane_warn_clear", lambda pane_id: None)
+    attempts = {"n": 0}
+
+    def _safe(pane_id):
+        # stay safe for >50 connect failures, then go unsafe to end the test
+        return attempts["n"] < 60
+
+    monkeypatch.setattr(wh, "_is_pane_safe", _safe)
+
+    class _Boom:
+        async def __aenter__(self):
+            attempts["n"] += 1
+            raise OSError("connect refused")
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr(wh.websockets, "connect", lambda *a, **k: _Boom())
+    rc = await asyncio.wait_for(wh.main(), timeout=5.0)
+    assert attempts["n"] >= 51  # proves we blew past the old max_attempts=50
+    assert rc == 0

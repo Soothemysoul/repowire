@@ -630,10 +630,17 @@ async def main() -> int:
 
     logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")
 
-    max_attempts = 50
+    # Unbounded reconnect (beads-evl): the old 50-attempt cap let the hook die
+    # forever during a >250s daemon outage, leaving the pane in an orchestration
+    # deadzone. We now reconnect indefinitely while the pane stays alive; the
+    # pane-safety guard (Claude gone → exit) replaces the attempt cap.
     attempt = 0
 
-    while attempt < max_attempts:
+    while True:
+        if not _is_pane_safe(pane_id):
+            logger.info("Pane %s no longer safe, stopping reconnect loop", pane_id)
+            clear_pane_runtime_state(pane_id)
+            return 0
         try:
             async with websockets.connect(
                 uri,
@@ -641,6 +648,7 @@ async def main() -> int:
                 ping_timeout=5,
             ) as websocket:
                 attempt = 0
+                _pane_warn_clear(pane_id)
 
                 connect_msg: dict[str, str] = {
                     "type": "connect",
@@ -693,25 +701,15 @@ async def main() -> int:
         except websockets.exceptions.ConnectionClosed as e:
             attempt += 1
             logger.warning(
-                f"Connection closed (attempt {attempt}/{max_attempts}): code={e.code}, "
-                f"reconnecting in 2s..."
+                "Connection closed (attempt %d): code=%s", attempt, e.code
             )
-            await asyncio.sleep(2)
-
         except (websockets.exceptions.WebSocketException, OSError) as e:
             attempt += 1
-            delay = min(1 * 2**attempt, 5)
-            logger.warning(
-                f"Connection error (attempt {attempt}/{max_attempts}): {e}, retrying in {delay}s..."
-            )
-            await asyncio.sleep(delay)
-            continue
+            logger.warning("Connection error (attempt %d): %s", attempt, e)
 
-        logger.info("Connection ended, reconnecting in 2s...")
-        await asyncio.sleep(2)
-
-    logger.error(f"Exhausted {max_attempts} reconnect attempts, exiting")
-    return 1
+        if attempt >= _WARN_AFTER_ATTEMPTS:
+            _pane_warn_set(pane_id)
+        await asyncio.sleep(_compute_backoff(attempt))
 
 
 if __name__ == "__main__":
