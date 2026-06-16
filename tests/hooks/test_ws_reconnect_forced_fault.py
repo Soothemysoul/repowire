@@ -33,6 +33,15 @@ from repowire.daemon.app import create_test_app
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.fixture(autouse=True)
+def _reset_ws_module_state():
+    """main() sets the _expected_command module global; reset it after the test
+    so it never leaks into other suites (tests/test_hooks.py reads it)."""
+    yield
+    wh._expected_command = None
+    wh._warn_active = False
+
+
 def _free_port() -> int:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

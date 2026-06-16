@@ -12,6 +12,18 @@ import pytest
 
 import repowire.hooks.websocket_hook as wh
 
+
+@pytest.fixture(autouse=True)
+def _reset_ws_module_state():
+    """main()/supervise() mutate module globals (_expected_command via the
+    `global` in main(), _warn_active via the pane-warn helpers). Reset them
+    after each test so state never leaks into other suites (e.g.
+    tests/test_hooks.py::TestIsPaneSafe, which reads _expected_command)."""
+    yield
+    wh._expected_command = None
+    wh._warn_active = False
+
+
 # --- Task 1: capped exponential backoff + full jitter -----------------------
 
 
