@@ -85,6 +85,9 @@ unresolved-import = "ignore"  # optional deps (opencode-ai)
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+markers = [
+    "soak: long real-wall-clock forced-fault tests; excluded from CI via -m 'not soak'",
+]
 
 [dependency-groups]
 dev = [
