@@ -9,6 +9,7 @@ import fcntl
 import json
 import logging
 import os
+import random
 import re
 import subprocess
 import sys
@@ -42,6 +43,100 @@ logger = logging.getLogger(__name__)
 
 # Set once at startup in main() — guards against pane reuse by a different agent
 _expected_command: str | None = None
+
+# Reconnect backoff cap — env-overridable so regression tests can compress the
+# >250s daemon-down window that used to exhaust the old 50-attempt cap.
+_RECONNECT_CAP_SEC = float(os.environ.get("REPOWIRE_WS_RECONNECT_CAP_SEC", "30"))
+
+
+def _compute_backoff(attempt: int, cap: float = _RECONNECT_CAP_SEC, base: float = 1.0) -> float:
+    """Full-jitter capped exponential backoff.
+
+    Returns a delay in [0, min(cap, base * 2**attempt)]. Full jitter spreads
+    simultaneous peer reconnects after a long daemon outage (anti
+    thundering-herd / reconnect-storm — same class as q2ok singleton-conflict).
+    """
+    ceiling = min(cap, base * (2 ** attempt))
+    return random.uniform(0.0, ceiling)
+
+
+# Mirror agent-gateway._check_marker freshness window. A marker older than this
+# is treated as crash-after-write, not an intentional signal.
+_INTENTIONAL_MARKER_MAX_AGE_SEC = 300
+
+
+def _marker_dir(role: str):
+    """marker directory for a role: $HOME/ai-infra/ops/<role>/."""
+    from pathlib import Path
+
+    return Path(os.path.expanduser("~")) / "ai-infra" / "ops" / role
+
+
+def _marker_present(role: str | None) -> bool:
+    """Peek (no unlink) for a fresh intentional shutdown/restart marker.
+
+    PEEK-ONLY: the marker is one-shot consumed by agent-gateway.monitor_loop;
+    the hook must NOT unlink it. Returns True iff a fresh (<300s)
+    .shutdown-intentional or .restart-intentional exists for `role`.
+    role=None (no role env, see Task 0) → False (degrade to pane-safety only).
+    """
+    if not role:
+        return False
+    base = _marker_dir(role)
+    for name in (".shutdown-intentional", ".restart-intentional"):
+        marker = base / name
+        try:
+            age = time.time() - marker.stat().st_mtime
+        except (FileNotFoundError, OSError):
+            continue
+        if age <= _INTENTIONAL_MARKER_MAX_AGE_SEC:
+            return True
+    return False
+
+
+# Surface the WS-lost warning only after the disconnect persists, so a
+# momentary blip does not flap the indicator.
+_WARN_AFTER_ATTEMPTS = 3
+_warn_active = False
+
+
+def _pane_warn_set(pane_id: str) -> None:
+    """Show a visible WS-lost warning in the pane WITHOUT touching stdin.
+
+    Persistent indicator via pane title + a one-shot transient status message.
+    Best-effort: tmux errors are swallowed and never break the reconnect loop.
+    NEVER use send-keys/paste-buffer/display-popup (would corrupt Claude's turn).
+    """
+    global _warn_active
+    try:
+        subprocess.run(
+            ["tmux", "select-pane", "-t", pane_id, "-T", "⚠ repowire WS lost"],
+            capture_output=True,
+        )
+        if not _warn_active:
+            subprocess.run(
+                ["tmux", "display-message", "-t", pane_id,
+                 "repowire: WS соединение потеряно, переподключаюсь…"],
+                capture_output=True,
+            )
+    except Exception as e:  # pragma: no cover
+        logger.debug("pane_warn_set failed: %s", e)
+    _warn_active = True
+
+
+def _pane_warn_clear(pane_id: str) -> None:
+    """Clear the WS-lost indicator on successful reconnect. Best-effort."""
+    global _warn_active
+    if not _warn_active:
+        return
+    try:
+        subprocess.run(
+            ["tmux", "select-pane", "-t", pane_id, "-T", ""],
+            capture_output=True,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.debug("pane_warn_clear failed: %s", e)
+    _warn_active = False
 
 
 class PaneUnsafeError(RuntimeError):
@@ -535,10 +630,17 @@ async def main() -> int:
 
     logger.info(f"Starting WebSocket hook for {display_name}@{circle} (pane={pane_id})")
 
-    max_attempts = 50
+    # Unbounded reconnect (beads-evl): the old 50-attempt cap let the hook die
+    # forever during a >250s daemon outage, leaving the pane in an orchestration
+    # deadzone. We now reconnect indefinitely while the pane stays alive; the
+    # pane-safety guard (Claude gone → exit) replaces the attempt cap.
     attempt = 0
 
-    while attempt < max_attempts:
+    while True:
+        if not _is_pane_safe(pane_id):
+            logger.info("Pane %s no longer safe, stopping reconnect loop", pane_id)
+            clear_pane_runtime_state(pane_id)
+            return 0
         try:
             async with websockets.connect(
                 uri,
@@ -546,6 +648,7 @@ async def main() -> int:
                 ping_timeout=5,
             ) as websocket:
                 attempt = 0
+                _pane_warn_clear(pane_id)
 
                 connect_msg: dict[str, str] = {
                     "type": "connect",
@@ -598,30 +701,60 @@ async def main() -> int:
         except websockets.exceptions.ConnectionClosed as e:
             attempt += 1
             logger.warning(
-                f"Connection closed (attempt {attempt}/{max_attempts}): code={e.code}, "
-                f"reconnecting in 2s..."
+                "Connection closed (attempt %d): code=%s", attempt, e.code
             )
-            await asyncio.sleep(2)
-
         except (websockets.exceptions.WebSocketException, OSError) as e:
             attempt += 1
-            delay = min(1 * 2**attempt, 5)
-            logger.warning(
-                f"Connection error (attempt {attempt}/{max_attempts}): {e}, retrying in {delay}s..."
-            )
-            await asyncio.sleep(delay)
-            continue
+            logger.warning("Connection error (attempt %d): %s", attempt, e)
 
-        logger.info("Connection ended, reconnecting in 2s...")
-        await asyncio.sleep(2)
+        if attempt >= _WARN_AFTER_ATTEMPTS:
+            _pane_warn_set(pane_id)
+        await asyncio.sleep(_compute_backoff(attempt))
 
-    logger.error(f"Exhausted {max_attempts} reconnect attempts, exiting")
-    return 1
+
+def _resolve_agent_role() -> str | None:
+    """Agent role-dir name for the marker path ($HOME/ai-infra/ops/<role>/).
+
+    Resolved from BRAIN_AGENT_ROLE, which spawn-claude exports into the hook
+    process env and which equals the role-dir name verbatim (director,
+    devops-head, devops-worker — confirmed in beads-evl Task 0). Returns None
+    when absent → _marker_present degrades to False (pane-safety guard still
+    applies). NOTE: REPOWIRE_PEER_ROLE is the mesh role (agent/orchestrator),
+    NOT the role-dir — do not use it here.
+    """
+    return os.environ.get("BRAIN_AGENT_ROLE") or None
+
+
+def supervise() -> int:
+    """Outer watchdog: re-enter main() on crash while the pane is alive and no
+    intentional shutdown/restart is in progress. Defense-in-depth for the rare
+    case where main() dies on an unhandled exception (unbounded reconnect
+    already covers normal WS drops).
+    """
+    role = _resolve_agent_role()
+    pane_id = os.environ.get("TMUX_PANE")
+    while True:
+        try:
+            rc = asyncio.run(main())
+        except KeyboardInterrupt:
+            return 0
+        except Exception:
+            logger.exception("ws-hook main() crashed; evaluating respawn")
+            rc = 1
+        if rc == 0:
+            return 0  # clean pane-unsafe exit from main()
+        if pane_id and not _is_pane_safe(pane_id):
+            logger.info("pane unsafe after crash; not respawning")
+            return rc
+        if _marker_present(role):
+            logger.info("intentional marker present after crash; not respawning")
+            return rc
+        time.sleep(_compute_backoff(1))
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(asyncio.run(main()))
+        sys.exit(supervise())
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(0)
