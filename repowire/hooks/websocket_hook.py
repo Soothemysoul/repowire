@@ -9,6 +9,7 @@ import fcntl
 import json
 import logging
 import os
+import random
 import re
 import subprocess
 import sys
@@ -42,6 +43,21 @@ logger = logging.getLogger(__name__)
 
 # Set once at startup in main() — guards against pane reuse by a different agent
 _expected_command: str | None = None
+
+# Reconnect backoff cap — env-overridable so regression tests can compress the
+# >250s daemon-down window that used to exhaust the old 50-attempt cap.
+_RECONNECT_CAP_SEC = float(os.environ.get("REPOWIRE_WS_RECONNECT_CAP_SEC", "30"))
+
+
+def _compute_backoff(attempt: int, cap: float = _RECONNECT_CAP_SEC, base: float = 1.0) -> float:
+    """Full-jitter capped exponential backoff.
+
+    Returns a delay in [0, min(cap, base * 2**attempt)]. Full jitter spreads
+    simultaneous peer reconnects after a long daemon outage (anti
+    thundering-herd / reconnect-storm — same class as q2ok singleton-conflict).
+    """
+    ceiling = min(cap, base * (2 ** attempt))
+    return random.uniform(0.0, ceiling)
 
 
 class PaneUnsafeError(RuntimeError):
