@@ -7,12 +7,10 @@ tmux pane-warning (no stdin injection).
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch  # noqa: F401  (kept for ad-hoc use in tests)
 
 import pytest
 
 import repowire.hooks.websocket_hook as wh
-
 
 # --- Task 1: capped exponential backoff + full jitter -----------------------
 
@@ -191,5 +189,5 @@ def test_supervise_no_respawn_when_pane_unsafe(monkeypatch):
         raise RuntimeError("crash")
 
     monkeypatch.setattr(wh.asyncio, "run", _fake_run)
-    rc = wh.supervise()
+    wh.supervise()
     assert calls["n"] == 1  # pane unsafe → no respawn
