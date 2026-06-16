@@ -712,9 +712,49 @@ async def main() -> int:
         await asyncio.sleep(_compute_backoff(attempt))
 
 
+def _resolve_agent_role() -> str | None:
+    """Agent role-dir name for the marker path ($HOME/ai-infra/ops/<role>/).
+
+    Resolved from BRAIN_AGENT_ROLE, which spawn-claude exports into the hook
+    process env and which equals the role-dir name verbatim (director,
+    devops-head, devops-worker — confirmed in beads-evl Task 0). Returns None
+    when absent → _marker_present degrades to False (pane-safety guard still
+    applies). NOTE: REPOWIRE_PEER_ROLE is the mesh role (agent/orchestrator),
+    NOT the role-dir — do not use it here.
+    """
+    return os.environ.get("BRAIN_AGENT_ROLE") or None
+
+
+def supervise() -> int:
+    """Outer watchdog: re-enter main() on crash while the pane is alive and no
+    intentional shutdown/restart is in progress. Defense-in-depth for the rare
+    case where main() dies on an unhandled exception (unbounded reconnect
+    already covers normal WS drops).
+    """
+    role = _resolve_agent_role()
+    pane_id = os.environ.get("TMUX_PANE")
+    while True:
+        try:
+            rc = asyncio.run(main())
+        except KeyboardInterrupt:
+            return 0
+        except Exception:
+            logger.exception("ws-hook main() crashed; evaluating respawn")
+            rc = 1
+        if rc == 0:
+            return 0  # clean pane-unsafe exit from main()
+        if pane_id and not _is_pane_safe(pane_id):
+            logger.info("pane unsafe after crash; not respawning")
+            return rc
+        if _marker_present(role):
+            logger.info("intentional marker present after crash; not respawning")
+            return rc
+        time.sleep(_compute_backoff(1))
+
+
 if __name__ == "__main__":
     try:
-        sys.exit(asyncio.run(main()))
+        sys.exit(supervise())
     except KeyboardInterrupt:
         logger.info("Interrupted by user")
         sys.exit(0)

@@ -133,3 +133,63 @@ async def test_main_retries_past_old_50_cap(monkeypatch):
     rc = await asyncio.wait_for(wh.main(), timeout=5.0)
     assert attempts["n"] >= 51  # proves we blew past the old max_attempts=50
     assert rc == 0
+
+
+# --- Task 4: supervise() watchdog outer loop --------------------------------
+
+
+def test_supervise_respawns_on_crash_when_safe(monkeypatch):
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    monkeypatch.setattr(wh, "_resolve_agent_role", lambda: "devops-head")
+    monkeypatch.setattr(wh, "_is_pane_safe", lambda pane_id: True)
+    monkeypatch.setattr(wh, "_marker_present", lambda role: False)
+    monkeypatch.setattr(wh, "_compute_backoff", lambda *a, **k: 0.0)
+    calls = {"n": 0}
+
+    def _fake_run(coro):
+        coro.close()
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("crash")   # first run crashes
+        return 0                          # second run exits clean → stop
+
+    monkeypatch.setattr(wh.asyncio, "run", _fake_run)
+    rc = wh.supervise()
+    assert calls["n"] == 2  # respawned exactly once after the crash
+    assert rc == 0
+
+
+def test_supervise_no_respawn_on_intentional_marker(monkeypatch):
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    monkeypatch.setattr(wh, "_resolve_agent_role", lambda: "devops-head")
+    monkeypatch.setattr(wh, "_is_pane_safe", lambda pane_id: True)
+    monkeypatch.setattr(wh, "_marker_present", lambda role: True)  # intentional!
+    monkeypatch.setattr(wh, "_compute_backoff", lambda *a, **k: 0.0)
+    calls = {"n": 0}
+
+    def _fake_run(coro):
+        coro.close()
+        calls["n"] += 1
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr(wh.asyncio, "run", _fake_run)
+    rc = wh.supervise()
+    assert calls["n"] == 1  # crashed once, marker present → NO respawn
+    assert rc == 1
+
+
+def test_supervise_no_respawn_when_pane_unsafe(monkeypatch):
+    monkeypatch.setenv("TMUX_PANE", "%1")
+    monkeypatch.setattr(wh, "_resolve_agent_role", lambda: "devops-head")
+    monkeypatch.setattr(wh, "_is_pane_safe", lambda pane_id: False)  # Claude gone
+    monkeypatch.setattr(wh, "_marker_present", lambda role: False)
+    calls = {"n": 0}
+
+    def _fake_run(coro):
+        coro.close()
+        calls["n"] += 1
+        raise RuntimeError("crash")
+
+    monkeypatch.setattr(wh.asyncio, "run", _fake_run)
+    rc = wh.supervise()
+    assert calls["n"] == 1  # pane unsafe → no respawn
