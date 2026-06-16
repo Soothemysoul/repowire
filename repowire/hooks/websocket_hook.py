@@ -94,6 +94,51 @@ def _marker_present(role: str | None) -> bool:
     return False
 
 
+# Surface the WS-lost warning only after the disconnect persists, so a
+# momentary blip does not flap the indicator.
+_WARN_AFTER_ATTEMPTS = 3
+_warn_active = False
+
+
+def _pane_warn_set(pane_id: str) -> None:
+    """Show a visible WS-lost warning in the pane WITHOUT touching stdin.
+
+    Persistent indicator via pane title + a one-shot transient status message.
+    Best-effort: tmux errors are swallowed and never break the reconnect loop.
+    NEVER use send-keys/paste-buffer/display-popup (would corrupt Claude's turn).
+    """
+    global _warn_active
+    try:
+        subprocess.run(
+            ["tmux", "select-pane", "-t", pane_id, "-T", "⚠ repowire WS lost"],
+            capture_output=True,
+        )
+        if not _warn_active:
+            subprocess.run(
+                ["tmux", "display-message", "-t", pane_id,
+                 "repowire: WS соединение потеряно, переподключаюсь…"],
+                capture_output=True,
+            )
+    except Exception as e:  # pragma: no cover
+        logger.debug("pane_warn_set failed: %s", e)
+    _warn_active = True
+
+
+def _pane_warn_clear(pane_id: str) -> None:
+    """Clear the WS-lost indicator on successful reconnect. Best-effort."""
+    global _warn_active
+    if not _warn_active:
+        return
+    try:
+        subprocess.run(
+            ["tmux", "select-pane", "-t", pane_id, "-T", ""],
+            capture_output=True,
+        )
+    except Exception as e:  # pragma: no cover
+        logger.debug("pane_warn_clear failed: %s", e)
+    _warn_active = False
+
+
 class PaneUnsafeError(RuntimeError):
     """Raised when the pane no longer belongs to the expected live agent."""
 

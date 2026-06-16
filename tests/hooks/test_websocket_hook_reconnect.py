@@ -59,3 +59,32 @@ def test_marker_present_stale_is_false(tmp_path, monkeypatch):
 
 def test_marker_present_none_role_is_false():
     assert wh._marker_present(None) is False  # graceful degradation (Task 0)
+
+
+# --- Task 5: Fix C — tmux pane-warning (no stdin injection) ------------------
+
+
+def test_pane_warn_set_uses_display_message_not_send_keys(monkeypatch):
+    monkeypatch.setattr(wh, "_warn_active", False)
+    cmds = []
+    monkeypatch.setattr(wh.subprocess, "run", lambda args, **k: cmds.append(args))
+    wh._pane_warn_set("%1")
+    flat = [" ".join(c) for c in cmds]
+    assert any("display-message" in f for f in flat)
+    assert all("send-keys" not in f for f in flat)   # NEVER stdin injection
+    assert all("display-popup" not in f for f in flat)
+
+
+def test_pane_warn_clear_resets_indicator(monkeypatch):
+    monkeypatch.setattr(wh, "_warn_active", False)
+    cmds = []
+    monkeypatch.setattr(wh.subprocess, "run", lambda args, **k: cmds.append(args))
+    wh._pane_warn_set("%1")
+    cmds.clear()
+    wh._pane_warn_clear("%1")
+    flat = [" ".join(c) for c in cmds]
+    assert any("select-pane" in f or "set-option" in f for f in flat)
+
+
+def test_warn_threshold_constant_present():
+    assert isinstance(wh._WARN_AFTER_ATTEMPTS, int) and wh._WARN_AFTER_ATTEMPTS >= 1
