@@ -340,6 +340,29 @@ class TestNotify:
         assert r.status_code == 503
         assert "Peer unreachable" in r.json()["detail"]
 
+    async def test_reverse_receipt_to_ambiguous_target_is_dropped(self, client):
+        """beads-fqus end-to-end: a reverse_receipt notify with no to_peer_id to an
+        ambiguous (cross-circle namesake) target is dropped by the daemon — it
+        returns 200 without ever reaching transport (no 503 from a blind delivery
+        attempt), and never leaks to a foreign-circle namesake."""
+        # Same display_name in two different circles -> ambiguous target.
+        for circle in ("project-drafter", "project-zeon"):
+            rp = await client.post("/peers", json={
+                "name": "pm", "path": "/tmp/pm", "circle": circle,
+                "backend": "claude-code",
+            })
+            assert rp.status_code == 200
+            amb_name = rp.json()["display_name"]
+
+        r = await client.post("/notify", json={
+            "from_peer": "gsd-dev",
+            "to_peer": amb_name,
+            "text": "[AUTO-ACK] notif-x delivered: queued",
+            "bypass_circle": True,
+            "reverse_receipt": True,
+        })
+        assert r.status_code == 200
+
 
 # -- Broadcast --
 

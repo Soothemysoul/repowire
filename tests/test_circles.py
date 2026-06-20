@@ -522,6 +522,154 @@ class TestAuthenticatedSenderResolution:
 
 
 # ---------------------------------------------------------------------------
+# Reverse-route receipt (AUTO-ACK / NACK) anti-leak — beads-fqus
+# The receipt is addressed back to the ORIGINAL sender. When the original
+# sender's authenticated peer_id was threaded forward (to_peer_id present) the
+# receipt hits it exactly. When it was NOT (forward carried no from_peer_id) the
+# bypass_circle receipt must NOT be blind-delivered to a foreign-circle namesake
+# of an ambiguous display_name — better to drop the best-effort receipt than to
+# leak it across circles.
+# ---------------------------------------------------------------------------
+
+
+class TestReverseRouteReceiptCollision:
+    @staticmethod
+    async def _register(pm, sid, name, circle, role=PeerRole.AGENT):
+        peer = Peer(
+            peer_id=sid, display_name=name, path=f"/{name}",
+            machine="localhost", circle=circle, role=role,
+        )
+        await pm.register_peer(peer)
+
+    @staticmethod
+    def _bias_preference_to(pm, *winning_sids):
+        transport = MagicMock()
+        transport.is_connected = lambda sid: sid in winning_sids
+        pm._transport = transport
+
+    async def test_reverse_receipt_with_to_peer_id_hits_exact_sender(
+        self, mock_message_router
+    ):
+        """KEY repro (authenticated): drafter-pm + zeon-pm both online; reverse
+        AUTO-ACK with the original sender's to_peer_id hits drafter-pm exactly,
+        never the biased zeon-pm namesake."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-drafter-pm", "pm-claude-code", "project-drafter")
+        await self._register(pm, "sid-zeon-pm", "pm-claude-code", "project-zeon")
+        await self._register(pm, "sid-drafter-gsd", "gsd-dev", "project-drafter")
+        self._bias_preference_to(pm, "sid-zeon-pm")  # wrong namesake would win
+
+        await pm.notify(
+            from_peer="gsd-dev",
+            to_peer="pm-claude-code",
+            to_peer_id="sid-drafter-pm",
+            text="[AUTO-ACK] notif-x delivered: queued",
+            bypass_circle=True,
+            reverse_receipt=True,
+        )
+        mock_message_router.send_notification.assert_called_once()
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-drafter-pm"
+
+    async def test_reverse_receipt_without_to_peer_id_drops_on_ambiguous_sender(
+        self, mock_message_router
+    ):
+        """KEY repro (unauthenticated): forward threaded no from_peer_id, so the
+        reverse receipt has no to_peer_id. With two pm namesakes the daemon must
+        NOT blind-deliver to the biased foreign-circle one — it drops the receipt
+        rather than leak cross-circle."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-drafter-pm", "pm-claude-code", "project-drafter")
+        await self._register(pm, "sid-zeon-pm", "pm-claude-code", "project-zeon")
+        await self._register(pm, "sid-drafter-gsd", "gsd-dev", "project-drafter")
+        self._bias_preference_to(pm, "sid-zeon-pm")  # the leak target
+
+        await pm.notify(
+            from_peer="gsd-dev",
+            to_peer="pm-claude-code",
+            text="[AUTO-ACK] notif-x delivered: queued",
+            bypass_circle=True,
+            reverse_receipt=True,
+        )
+        # Dropped — no blind cross-circle delivery to the foreign namesake.
+        mock_message_router.send_notification.assert_not_called()
+
+    async def test_reverse_nack_without_to_peer_id_drops_on_ambiguous_sender(
+        self, mock_message_router
+    ):
+        """Same anti-leak invariant for an AUTO-NACK reverse receipt."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-drafter-pm", "pm-claude-code", "project-drafter")
+        await self._register(pm, "sid-zeon-pm", "pm-claude-code", "project-zeon")
+        self._bias_preference_to(pm, "sid-zeon-pm")
+
+        await pm.notify(
+            from_peer="backend-head",
+            to_peer="pm-claude-code",
+            text="[AUTO-NACK] notif-x failed: injection failed",
+            bypass_circle=True,
+            reverse_receipt=True,
+        )
+        mock_message_router.send_notification.assert_not_called()
+
+    async def test_reverse_receipt_unique_sender_delivered_without_to_peer_id(
+        self, mock_message_router
+    ):
+        """Don't over-drop: a legit cross-circle bypass receipt to a UNIQUE-named
+        sender (worker -> director) still delivers even without to_peer_id —
+        there is no ambiguity to leak through."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(
+            pm, "sid-dir", "director", "global", role=PeerRole.ORCHESTRATOR
+        )
+        await self._register(pm, "sid-w", "worker", "project-x")
+
+        await pm.notify(
+            from_peer="worker",
+            to_peer="director",
+            text="[AUTO-ACK] notif-x delivered: queued",
+            bypass_circle=True,
+            reverse_receipt=True,
+        )
+        mock_message_router.send_notification.assert_called_once()
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-dir"
+
+
+# ---------------------------------------------------------------------------
+# broadcast threads the authenticated from_peer_id — beads-fqus
+# Without it, a broadcast's receiver cannot address its AUTO-ACK back to the
+# exact original sender and the receipt misroutes by ambiguous display_name.
+# ---------------------------------------------------------------------------
+
+
+class TestBroadcastThreadsFromPeerId:
+    @staticmethod
+    async def _register(pm, sid, name, circle, role=PeerRole.AGENT):
+        peer = Peer(
+            peer_id=sid, display_name=name, path=f"/{name}",
+            machine="localhost", circle=circle, role=role,
+        )
+        await pm.register_peer(peer)
+
+    async def test_broadcast_passes_resolved_from_peer_id_to_router(
+        self, mock_message_router
+    ):
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-sender", "backend-worker", "circle-zeon")
+        await self._register(pm, "sid-other", "backend-head", "circle-zeon")
+
+        await pm.broadcast(
+            from_peer="backend-worker",
+            from_peer_id="sid-sender",
+            text="heads up",
+        )
+        mock_message_router.broadcast.assert_called_once()
+        _, kwargs = mock_message_router.broadcast.call_args
+        assert kwargs.get("from_peer_id") == "sid-sender"
+
+
+# ---------------------------------------------------------------------------
 # Peer model -- role field
 # ---------------------------------------------------------------------------
 

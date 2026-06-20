@@ -130,6 +130,15 @@ class NotifyRequest(BaseModel):
             "message queues naturally until the receiver finishes its turn."
         ),
     )
+    reverse_receipt: bool = Field(
+        default=False,
+        description=(
+            "Marks an AUTO-(N)ACK reverse-route receipt (beads-fqus). Gates the "
+            "anti-leak drop: a receipt with no authenticated to_peer_id whose "
+            "target display_name is ambiguous is dropped rather than blind-"
+            "delivered to a foreign-circle namesake."
+        ),
+    )
 
 
 class BroadcastRequest(BaseModel):
@@ -246,6 +255,7 @@ async def notify_peer(
             interrupt=request.interrupt,
             from_peer_id=request.from_peer_id,
             to_peer_id=request.to_peer_id,
+            reverse_receipt=request.reverse_receipt,
         )
         return OkResponse()
     except ValueError as e:
