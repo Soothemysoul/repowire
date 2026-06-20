@@ -973,14 +973,23 @@ class PeerRegistry:
             return
         if not to_obj:
             return
+        if to_obj.bypasses_circles:
+            # beads-8lzb: a service/global target (director/telegram/brain-admin,
+            # role SERVICE/ORCHESTRATOR/HUMAN) is reachable from outside the circle
+            # system by design — the user via telegram-gateway, or a CLI relay, is a
+            # legitimate unresolved sender. This MUST sit above the unresolved-sender
+            # guard below, otherwise legit gateway->director is cut (hqvm DoD7
+            # regression).
+            return
         if not from_obj:
-            # beads-hqvm DoD7: an unresolved sender on a non-bypass path must NOT
-            # get a free pass through the circle guard (closes early-return-on-None).
+            # beads-hqvm DoD7 (refined by beads-8lzb: now scoped to project targets
+            # only): an unresolved sender on a non-bypass path to a project-scoped
+            # peer is a leak — DENY.
             raise ValueError(
                 f"Circle boundary: unresolved sender cannot access "
                 f"{to_obj.display_name} ({to_obj.circle})"
             )
-        if from_obj.bypasses_circles or to_obj.bypasses_circles:
+        if from_obj.bypasses_circles:
             return
         if from_obj.circle != to_obj.circle:
             raise ValueError(

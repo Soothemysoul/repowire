@@ -418,6 +418,43 @@ class TestAuthenticatedSenderResolution:
         result = await pm.query("cli", "peer-b", "hi", bypass_circle=True)
         assert result == "mock response"
 
+    async def test_unresolved_sender_orchestrator_target_allowed(self, mock_message_router):
+        """beads-8lzb: prod repro — unresolved sender (telegram-gateway relaying a
+        user message, no from_peer_id, non-bypass) reaches an ORCHESTRATOR target
+        (director). Service/global targets are reachable from outside the circle
+        system by design; the hqvm DoD7 guard must NOT cut this legit channel."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-dir", "director", "global", role=PeerRole.ORCHESTRATOR)
+
+        await pm.notify("telegram-gateway", "director", "user message")
+
+        mock_message_router.send_notification.assert_called_once()
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-dir"
+
+    async def test_unresolved_sender_service_target_allowed(self, mock_message_router):
+        """beads-8lzb: same invariant for a SERVICE target (telegram/brain-admin) —
+        bypasses_circles is True for SERVICE too, so an unresolved non-bypass sender
+        must pass the guard."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-svc", "brain-admin", "global", role=PeerRole.SERVICE)
+
+        await pm.notify("telegram-gateway", "brain-admin", "secret filled")
+
+        mock_message_router.send_notification.assert_called_once()
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-svc"
+
+    async def test_unresolved_sender_project_target_blocked(self, mock_message_router):
+        """beads-8lzb / hqvm DoD7 (refined): unresolved non-bypass sender still
+        BLOCKED for a project-scoped (role=AGENT) target — the real leak case.
+        Explicit analog of test_unresolved_sender_non_bypass_blocked, kept here so
+        the pass/block boundary is visible side by side."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-w", "project-worker", "project-zeon")
+        with pytest.raises(ValueError, match="Circle boundary"):
+            await pm.notify("ghost-sender", "project-worker", "leak attempt")
+
     async def test_bypass_sender_not_scoped_to_its_circle(self, mock_message_router):
         """T4: service/orchestrator sender is NOT scoped — reaches other circles."""
         pm = PeerRegistry(config=Config(), message_router=mock_message_router)
