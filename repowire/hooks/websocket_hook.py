@@ -33,16 +33,29 @@ from repowire.hooks._identity import resolve_agent_path
 from repowire.hooks._tmux import get_tmux_info, normalize_circle
 from repowire.hooks.utils import (
     clear_pane_runtime_state,
+    escalation_text,
     get_display_name,
     pending_cid_path,
-    pop_overdue_acks,
     read_pane_runtime_metadata,
+    receipt_inline_enabled,
     resolve_pending_ack,
+    sweep_overdue_acks,
+    tmux_send_keys,
+    wait_for_normal_mode,
     write_pane_runtime_metadata,
 )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# beads-nfap.2: the ACK-watchdog escalation helpers + tmux injector moved to
+# repowire.hooks.utils so the stop-hook sweep can reuse them without importing
+# this websockets-dependent module. These underscore aliases preserve the
+# original call sites and the existing tests that patch them on this module.
+_escalation_text = escalation_text
+_receipt_inline_enabled = receipt_inline_enabled
+_tmux_send_keys = tmux_send_keys
+_wait_for_normal_mode = wait_for_normal_mode
 
 # Set once at startup in main() — guards against pane reuse by a different agent
 _expected_command: str | None = None
@@ -158,13 +171,6 @@ _BARE_CID_RE = re.compile(r"(notif-[a-f0-9]{8})")
 # wrapped in the intent-ACK's OWN `[#notif-NEW] ` prefix; the cid we resolve is
 # the ORIGINAL delegation cid inside `ACK notif-ORIG …`.
 _INTENT_ACK_RE = re.compile(r"^(?:\[#notif-[a-f0-9]{8}\]\s*)?ACK\s+(notif-[a-f0-9]{8})\b")
-
-
-def _receipt_inline_enabled() -> bool:
-    """Rollback switch (beads-nfap.1, mesh-safety): REPOWIRE_RECEIPT_INLINE=1 keeps
-    the legacy inline pane-injection of receipts (and disables the watchdog),
-    giving an instant revert if the out-of-band path misbehaves in production."""
-    return os.environ.get("REPOWIRE_RECEIPT_INLINE", "") == "1"
 
 
 def _classify_receipt(text: str) -> tuple[str, str] | None:
@@ -383,29 +389,16 @@ _ACK_WATCHDOG_INTERVAL_SEC = float(
 )
 
 
-def _escalation_text(correlation_id: str, to_peer: str) -> str:
-    """Single actionable escalation injected when a notify goes un-ACKed."""
-    return (
-        f"[repowire] notify {correlation_id} → {to_peer} не подтверждён "
-        "(нет ACK о доставке за отведённое время). Доставка могла не пройти — "
-        "проверь получателя и при необходимости повтори отправку."
-    )
-
-
 def _run_ack_watchdog_once(pane_id: str, now: float) -> None:
     """One watchdog sweep: escalate every pending notify whose deadline passed.
 
-    pop_overdue_acks removes the entries it returns in the same locked
-    transaction, so each overdue notify is escalated exactly once even across
-    repeated ticks. No-op under the inline rollback flag.
+    Delegates to the shared sweep_overdue_acks (beads-nfap.2) so the ws-hook
+    watchdog and the stop-hook defense-in-depth sweep stay single-sourced. The
+    pop is atomic, so each overdue notify is escalated exactly once even across
+    repeated ticks and across the two sweepers. No-op under the inline rollback
+    flag (handled inside the sweep).
     """
-    if _receipt_inline_enabled():
-        return
-    for entry in pop_overdue_acks(pane_id, now=now):
-        _tmux_send_keys(
-            pane_id,
-            _escalation_text(entry["correlation_id"], entry.get("to_peer", "unknown")),
-        )
+    sweep_overdue_acks(pane_id, now=now, inject=lambda text: _tmux_send_keys(pane_id, text))
 
 
 async def _ack_watchdog_loop(pane_id: str) -> None:
@@ -445,73 +438,6 @@ def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
         finally:
             fcntl.flock(lock_file, fcntl.LOCK_UN)
 
-
-def _wait_for_normal_mode(pane_id: str, max_retries: int = 20, sleep_s: float = 0.05) -> None:
-    """Poll until pane exits copy-mode or timeout.
-
-    Needed because tmux processes 'send-keys -X cancel' asynchronously — the pane
-    may still report pane_in_mode=1 for a brief window after cancel is sent.
-    Without this wait, the immediately following 'send-keys -l' arrives while
-    copy-mode is still active and its characters are interpreted as vi commands
-    (f=jump, t=jump-to, :=goto-line, /=search …) instead of literal input.
-    """
-    for _ in range(max_retries):
-        result = subprocess.run(
-            ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_in_mode}"],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0 or result.stdout.strip() == "0":
-            return
-        time.sleep(sleep_s)
-    logger.warning(
-        "Pane %s still in copy-mode after %.1fs, injecting anyway",
-        pane_id,
-        max_retries * sleep_s,
-    )
-
-
-def _tmux_send_keys(pane_id: str, text: str, interrupt: bool = False) -> bool:
-    """Send keys to a tmux pane via subprocess.
-
-    Default path (interrupt=False) mirrors direct-stdin semantics: cancel
-    copy-mode if active, paste text via bracketed-paste, Enter. No Escape —
-    Escape cancels Claude's in-flight turn, so sending it unconditionally
-    turned every hook injection into an interrupt (beads-61w forensics).
-    The tty buffer itself becomes the natural per-session message queue.
-
-    interrupt=True re-adds Escape *before* paste so the cancel lands first
-    and the paste is consumed as the receiver's next input (opt-in escape
-    hatch for genuine emergencies).
-    """
-    try:
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
-            capture_output=True,
-        )
-        _wait_for_normal_mode(pane_id)
-        if interrupt:
-            subprocess.run(
-                ["tmux", "send-keys", "-t", pane_id, "Escape"],
-                capture_output=True,
-                check=True,
-            )
-            time.sleep(0.1)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "-l", text],
-            capture_output=True,
-            check=True,
-        )
-        time.sleep(0.5)
-        subprocess.run(
-            ["tmux", "send-keys", "-t", pane_id, "Enter"],
-            capture_output=True,
-            check=True,
-        )
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError) as e:
-        logger.error(f"Failed to send keys to {pane_id}: {e}")
-        return False
 
 
 def _get_pane_command(pane_id: str) -> str | None:

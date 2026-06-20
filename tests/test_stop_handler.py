@@ -4,6 +4,10 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
+import repowire.config.models as cfg_models
+from repowire.hooks import utils
 from repowire.hooks.stop_handler import main
 
 
@@ -176,3 +180,113 @@ class TestStopHandler:
         payload = response_calls[0][0][1]
         assert payload["pane_id"] == "%42"
         assert payload["text"] == "I am finished."
+
+
+PANE = "%42"
+
+
+class TestStopHandlerAckSweep:
+    """beads-nfap.2: the Stop hook duplicates the ws-hook ack-watchdog as
+    defense-in-depth — at every turn boundary it sweeps the per-pane ack-state and
+    escalates un-ACKed overdue notifies, in case the ws-hook process is down."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate_cache_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(cfg_models, "CACHE_DIR", tmp_path / "cache")
+
+    @pytest.fixture(autouse=True)
+    def _no_receipt_inline(self, monkeypatch):
+        monkeypatch.delenv("REPOWIRE_RECEIPT_INLINE", raising=False)
+
+    def _run(self):
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.read.return_value = json.dumps(
+                {"cwd": "/tmp/test", "session_id": "abc12345-rest"}
+            )
+            return main()
+
+    def test_escalates_overdue_pending(self):
+        utils.register_pending_ack(PANE, "notif-aaaabbbb", deadline=100.0, to_peer="backend-head")
+        sent: list[str] = []
+        with patch("repowire.hooks.stop_handler.daemon_post"), \
+             patch("repowire.hooks.stop_handler.update_status", return_value=True), \
+             patch("repowire.hooks.stop_handler.get_pane_id", return_value=PANE), \
+             patch(
+                 "repowire.hooks.stop_handler.tmux_send_keys",
+                 side_effect=lambda pane, text, interrupt=False: sent.append(text) or True,
+             ):
+            self._run()
+        assert len(sent) == 1
+        assert "notif-aaaabbbb" in sent[0]
+        assert "backend-head" in sent[0]
+
+    def test_skips_pending_within_deadline(self):
+        utils.register_pending_ack(PANE, "notif-ccccdddd", deadline=9_999_999_999.0, to_peer="pm")
+        sent: list[str] = []
+        with patch("repowire.hooks.stop_handler.daemon_post"), \
+             patch("repowire.hooks.stop_handler.update_status", return_value=True), \
+             patch("repowire.hooks.stop_handler.get_pane_id", return_value=PANE), \
+             patch(
+                 "repowire.hooks.stop_handler.tmux_send_keys",
+                 side_effect=lambda pane, text, interrupt=False: sent.append(text) or True,
+             ):
+            self._run()
+        assert sent == []
+
+    def test_skips_resolved_pending(self):
+        utils.register_pending_ack(PANE, "notif-eeeeffff", deadline=100.0, to_peer="pm")
+        utils.resolve_pending_ack(PANE, "notif-eeeeffff", kind="ack", text="[AUTO-ACK] delivered")
+        sent: list[str] = []
+        with patch("repowire.hooks.stop_handler.daemon_post"), \
+             patch("repowire.hooks.stop_handler.update_status", return_value=True), \
+             patch("repowire.hooks.stop_handler.get_pane_id", return_value=PANE), \
+             patch(
+                 "repowire.hooks.stop_handler.tmux_send_keys",
+                 side_effect=lambda pane, text, interrupt=False: sent.append(text) or True,
+             ):
+            self._run()
+        assert sent == []
+
+    def test_gated_by_inline_rollback_flag(self, monkeypatch):
+        monkeypatch.setenv("REPOWIRE_RECEIPT_INLINE", "1")
+        utils.register_pending_ack(PANE, "notif-00001111", deadline=100.0, to_peer="pm")
+        sent: list[str] = []
+        with patch("repowire.hooks.stop_handler.daemon_post"), \
+             patch("repowire.hooks.stop_handler.update_status", return_value=True), \
+             patch("repowire.hooks.stop_handler.get_pane_id", return_value=PANE), \
+             patch(
+                 "repowire.hooks.stop_handler.tmux_send_keys",
+                 side_effect=lambda pane, text, interrupt=False: sent.append(text) or True,
+             ):
+            self._run()
+        assert sent == []
+
+    def test_still_delivers_response_while_sweeping(self, tmp_path):
+        """Existing stop_handler logic (chat turns + /response) stays intact when a
+        sweep also runs."""
+        utils.register_pending_ack(PANE, "notif-22223333", deadline=100.0, to_peer="pm")
+        tp = tmp_path / "t.jsonl"
+        tp.write_text(
+            json.dumps({"type": "user", "message": {"content": "hi"}}) + "\n"
+            + json.dumps(
+                {"type": "assistant", "message": {"content": [{"type": "text", "text": "hello"}]}}
+            )
+            + "\n"
+        )
+        with patch("repowire.hooks.stop_handler.daemon_post") as mock_post, \
+             patch("repowire.hooks.stop_handler.update_status", return_value=True), \
+             patch("repowire.hooks.stop_handler.get_pane_id", return_value=PANE), \
+             patch(
+                 "repowire.hooks.stop_handler.tmux_send_keys",
+                 side_effect=lambda pane, text, interrupt=False: True,
+             ):
+            with patch("sys.stdin") as mock_stdin:
+                mock_stdin.read.return_value = json.dumps({
+                    "cwd": str(tmp_path),
+                    "session_id": "abc12345-rest",
+                    "transcript_path": str(tp),
+                })
+                main()
+        paths = [c[0][0] for c in mock_post.call_args_list]
+        assert "/events/chat" in paths
+        assert "/response" in paths
