@@ -219,8 +219,11 @@ class TelegramPeer:
                     timeout=35,
                 )
                 for u in r.json().get("result", []):
-                    self._tg_offset = u["update_id"] + 1
+                    # at-least-once: advance the offset only AFTER successful
+                    # delivery, so a transient _on_update failure leaves the
+                    # offset un-acked and Telegram redelivers (beads-mhph).
                     await self._on_update(u)
+                    self._tg_offset = u["update_id"] + 1
             except asyncio.CancelledError:
                 break
             except Exception:
