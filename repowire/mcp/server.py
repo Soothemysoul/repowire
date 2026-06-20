@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -14,7 +15,7 @@ from mcp.server.fastmcp import FastMCP
 from repowire.config.models import DEFAULT_DAEMON_URL
 from repowire.hooks._identity import resolve_agent_path
 from repowire.hooks._tmux import get_pane_id, get_tmux_info
-from repowire.hooks.utils import get_display_name
+from repowire.hooks.utils import get_display_name, register_pending_ack
 from repowire.protocol.errors import DaemonConnectionError, DaemonHTTPError, DaemonTimeoutError
 
 logger = logging.getLogger(__name__)
@@ -34,6 +35,47 @@ _cached_peer_id: str | None = None
 
 # Lazy registration: ensure peer is registered on first MCP tool use
 _registered: bool = False
+
+# beads-nfap.1: out-of-band ACK watchdog deadline for an outgoing notify.
+_ACK_DEADLINE_SEC = float(os.environ.get("REPOWIRE_ACK_DEADLINE_SEC", "60"))
+
+# Peers that never run the tmux AUTO-ACK hook (telegram/dashboard forward to the
+# user; slack uses Socket Mode). Registering a pending for them would falsely
+# escalate every time, and their delivery failures already surface synchronously
+# as MCP tool errors — so the watchdog skips them. Mirrors the daemon's existing
+# `display_name.startswith("telegram")` service special-case in /notify.
+_NON_ACKING_PREFIXES = ("telegram", "dashboard", "slack")
+
+
+def _receipt_inline_enabled() -> bool:
+    """Rollback switch (beads-nfap.1): REPOWIRE_RECEIPT_INLINE=1 disables the
+    out-of-band watchdog so receipts inject inline as before."""
+    return os.environ.get("REPOWIRE_RECEIPT_INLINE", "") == "1"
+
+
+def _should_register_ack(peer_name: str) -> bool:
+    """Whether an outgoing notify to peer_name expects an AUTO-ACK worth tracking."""
+    if _receipt_inline_enabled():
+        return False
+    return not peer_name.lower().startswith(_NON_ACKING_PREFIXES)
+
+
+def _register_outgoing_ack(correlation_id: str, peer_name: str) -> None:
+    """Register the watchdog pending for an outgoing notify (best-effort)."""
+    if not _should_register_ack(peer_name):
+        return
+    pane_id = get_pane_id()
+    if not pane_id:
+        return
+    try:
+        register_pending_ack(
+            pane_id,
+            correlation_id,
+            deadline=time.time() + _ACK_DEADLINE_SEC,
+            to_peer=peer_name,
+        )
+    except Exception as e:  # pragma: no cover — registration is best-effort
+        logger.debug("ack-watchdog registration failed: %s", e)
 
 
 def _get_http_client() -> httpx.AsyncClient:
@@ -308,6 +350,10 @@ def create_mcp_server() -> FastMCP:
         if circle is not None:
             body["circle"] = circle
         await daemon_request("POST", "/notify", body)
+        # beads-nfap.1: track delivery out-of-band. A successful POST only means
+        # the daemon queued the WS frame; the watchdog escalates if no AUTO-ACK /
+        # intent-ACK confirms actual delivery before the deadline.
+        _register_outgoing_ack(correlation_id, peer_name)
         return correlation_id
 
     @mcp.tool()

@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import time
+from contextlib import suppress
 
 try:
     import httpx
@@ -34,7 +35,9 @@ from repowire.hooks.utils import (
     clear_pane_runtime_state,
     get_display_name,
     pending_cid_path,
+    pop_overdue_acks,
     read_pane_runtime_metadata,
+    resolve_pending_ack,
     write_pane_runtime_metadata,
 )
 
@@ -147,6 +150,67 @@ class PaneUnsafeError(RuntimeError):
 
 _NOTIF_ID_IN_TEXT_RE = re.compile(r"\[#(notif-[a-f0-9]{8})\]")
 _AUTO_ACK_PREFIXES = ("[AUTO-ACK]", "[AUTO-NACK]")
+
+# beads-nfap.1: out-of-band receipt intercept (sender side).
+# A bare correlation id, e.g. the `notif-XXX` right after `[AUTO-ACK] `.
+_BARE_CID_RE = re.compile(r"(notif-[a-f0-9]{8})")
+# intent-ACK authored by the receiver-LLM. It travels through MCP so it arrives
+# wrapped in the intent-ACK's OWN `[#notif-NEW] ` prefix; the cid we resolve is
+# the ORIGINAL delegation cid inside `ACK notif-ORIG …`.
+_INTENT_ACK_RE = re.compile(r"^(?:\[#notif-[a-f0-9]{8}\]\s*)?ACK\s+(notif-[a-f0-9]{8})\b")
+
+
+def _receipt_inline_enabled() -> bool:
+    """Rollback switch (beads-nfap.1, mesh-safety): REPOWIRE_RECEIPT_INLINE=1 keeps
+    the legacy inline pane-injection of receipts (and disables the watchdog),
+    giving an instant revert if the out-of-band path misbehaves in production."""
+    return os.environ.get("REPOWIRE_RECEIPT_INLINE", "") == "1"
+
+
+def _classify_receipt(text: str) -> tuple[str, str] | None:
+    """Classify an inbound message as a delivery receipt.
+
+    Returns (kind, correlation_id) where kind is 'ack' | 'nack' | 'intent', or
+    None when the text is an ordinary message. The cid is the one whose delivery
+    the receipt confirms (for intent-ACK that is the ORIGINAL delegation cid, not
+    the intent-ACK's own wrapper cid).
+    """
+    if text.startswith("[AUTO-ACK]"):
+        m = _BARE_CID_RE.search(text[:64])
+        return ("ack", m.group(1) if m else "")
+    if text.startswith("[AUTO-NACK]"):
+        m = _BARE_CID_RE.search(text[:64])
+        return ("nack", m.group(1) if m else "")
+    m = _INTENT_ACK_RE.match(text)
+    if m:
+        return ("intent", m.group(1))
+    return None
+
+
+def _swallow_receipt(pane_id: str, kind: str, correlation_id: str, text: str) -> None:
+    """Record a receipt to the per-pane ack-state file (no pane injection)."""
+    if correlation_id:
+        resolve_pending_ack(pane_id, correlation_id, kind=kind, text=text)
+
+
+async def _intercept_receipt(pane_id: str, text: str) -> bool:
+    """Out-of-band receipt handling on the SENDER side.
+
+    Records the receipt to ack-state. Returns True when the message was fully
+    swallowed (AUTO-ACK / intent-ACK → complete silence, no injection). Returns
+    False for ordinary messages, for AUTO-NACK (actionable → still injected), and
+    when the rollback flag forces inline behavior.
+    """
+    if _receipt_inline_enabled():
+        return False
+    receipt = _classify_receipt(text)
+    if receipt is None:
+        return False
+    kind, correlation_id = receipt
+    await asyncio.to_thread(_swallow_receipt, pane_id, kind, correlation_id, text)
+    # AUTO-NACK is a genuine delivery failure — let it fall through to injection
+    # so the sender still sees it. AUTO-ACK / intent-ACK are pure success noise.
+    return kind != "nack"
 
 
 def _resolve_my_name() -> str:
@@ -310,6 +374,55 @@ async def _maybe_emit_receipt(
             from_peer_id=from_peer_id,
         )
 
+
+
+# beads-nfap.1: how long the watchdog waits for an ACK before escalating, and
+# how often it sweeps for overdue pendings. Env-overridable so tests stay fast.
+_ACK_WATCHDOG_INTERVAL_SEC = float(
+    os.environ.get("REPOWIRE_ACK_WATCHDOG_INTERVAL_SEC", "15")
+)
+
+
+def _escalation_text(correlation_id: str, to_peer: str) -> str:
+    """Single actionable escalation injected when a notify goes un-ACKed."""
+    return (
+        f"[repowire] notify {correlation_id} → {to_peer} не подтверждён "
+        "(нет ACK о доставке за отведённое время). Доставка могла не пройти — "
+        "проверь получателя и при необходимости повтори отправку."
+    )
+
+
+def _run_ack_watchdog_once(pane_id: str, now: float) -> None:
+    """One watchdog sweep: escalate every pending notify whose deadline passed.
+
+    pop_overdue_acks removes the entries it returns in the same locked
+    transaction, so each overdue notify is escalated exactly once even across
+    repeated ticks. No-op under the inline rollback flag.
+    """
+    if _receipt_inline_enabled():
+        return
+    for entry in pop_overdue_acks(pane_id, now=now):
+        _tmux_send_keys(
+            pane_id,
+            _escalation_text(entry["correlation_id"], entry.get("to_peer", "unknown")),
+        )
+
+
+async def _ack_watchdog_loop(pane_id: str) -> None:
+    """Persistent sweeper task hosted by the ws-hook (the always-on driver).
+
+    Ticks every _ACK_WATCHDOG_INTERVAL_SEC regardless of pane activity, so a
+    silent sender still gets its escalation. Cancelled when the connection
+    closes; restarted on reconnect (pendings live in the file, not in memory).
+    """
+    if _receipt_inline_enabled():
+        return
+    while True:
+        await asyncio.sleep(_ACK_WATCHDOG_INTERVAL_SEC)
+        try:
+            await asyncio.to_thread(_run_ack_watchdog_once, pane_id, time.time())
+        except Exception as e:  # pragma: no cover — watchdog must never crash the hook
+            logger.debug("ack-watchdog sweep failed: %s", e)
 
 
 def _push_pending_cid(pane_id: str, correlation_id: str) -> None:
@@ -543,6 +656,9 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     elif msg_type == "notify":
         from_peer = data.get("from_peer", "unknown")
         text = data.get("text", "")
+        if await _intercept_receipt(pane_id, text):
+            logger.info("Swallowed out-of-band receipt from %s (no injection)", from_peer)
+            return
         try:
             ok = await asyncio.to_thread(
                 _tmux_send_keys, pane_id, f"@{from_peer}: {text}", interrupt
@@ -582,6 +698,9 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     elif msg_type == "broadcast":
         from_peer = data.get("from_peer", "unknown")
         text = data.get("text", "")
+        if await _intercept_receipt(pane_id, text):
+            logger.info("Swallowed out-of-band broadcast receipt from %s", from_peer)
+            return
         try:
             msg = f"@{from_peer} [broadcast]: {text}"
             ok = await asyncio.to_thread(_tmux_send_keys, pane_id, msg, interrupt)
@@ -677,6 +796,30 @@ async def main() -> int:
     # pane-safety guard (Claude gone → exit) replaces the attempt cap.
     attempt = 0
 
+    # beads-nfap.1: the persistent out-of-band ACK watchdog. It reads the per-pane
+    # ack-state file independently of the WS connection, so a single long-lived
+    # task survives reconnects. No-op under the inline rollback flag.
+    watchdog_task = asyncio.create_task(_ack_watchdog_loop(pane_id))
+    try:
+        return await _reconnect_loop(
+            pane_id, uri, display_name, circle, backend, path, attempt
+        )
+    finally:
+        watchdog_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await watchdog_task
+
+
+async def _reconnect_loop(
+    pane_id: str,
+    uri: str,
+    display_name: str,
+    circle: str,
+    backend: "AgentType",
+    path: str,
+    attempt: int,
+) -> int:
+    """Reconnect/message loop, extracted so main() can own the watchdog lifecycle."""
     while True:
         if not _is_pane_safe(pane_id):
             logger.info("Pane %s no longer safe, stopping reconnect loop", pane_id)
