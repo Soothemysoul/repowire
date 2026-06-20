@@ -74,6 +74,15 @@ class QueryRequest(BaseModel):
     """Request to query a peer."""
 
     from_peer: str | None = Field(None, description="Name of the sending peer (optional for CLI)")
+    from_peer_id: str | None = Field(
+        None,
+        description=(
+            "Authenticated peer_id of the sender (beads-hqvm). When supplied, the "
+            "daemon resolves the sender unambiguously and scopes target resolution "
+            "to the sender's circle, fixing cross-circle misrouting under "
+            "display_name collisions."
+        ),
+    )
     to_peer: str = Field(..., description="Name of the target peer")
     text: str = Field(..., description="Query text")
     timeout: float = Field(default=DEFAULT_QUERY_TIMEOUT, description="Timeout in seconds")
@@ -93,7 +102,23 @@ class NotifyRequest(BaseModel):
     """Request to send a notification."""
 
     from_peer: str = Field(..., description="Name of the sending peer")
+    from_peer_id: str | None = Field(
+        None,
+        description=(
+            "Authenticated peer_id of the sender (beads-hqvm). Resolves the "
+            "sender unambiguously and scopes target resolution to the sender's "
+            "circle under display_name collisions."
+        ),
+    )
     to_peer: str = Field(..., description="Name of the target peer")
+    to_peer_id: str | None = Field(
+        None,
+        description=(
+            "Exact peer_id of the target (beads-hqvm). When supplied, the target "
+            "is resolved directly with no display_name ambiguity — used by the "
+            "AUTO-ACK reverse route to reply to the precise original sender."
+        ),
+    )
     text: str = Field(..., description="Notification text")
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
     circle: str | None = Field(None, description="Circle to scope target peer lookup")
@@ -111,6 +136,9 @@ class BroadcastRequest(BaseModel):
     """Request to broadcast a message."""
 
     from_peer: str = Field(..., description="Name of the sending peer")
+    from_peer_id: str | None = Field(
+        None, description="Authenticated peer_id of the sender (beads-hqvm)"
+    )
     text: str = Field(..., description="Broadcast text")
     exclude: list[str] = Field(default_factory=list, description="Peers to exclude")
     bypass_circle: bool = Field(default=False, description="Bypass circle restrictions (CLI mode)")
@@ -168,6 +196,7 @@ async def query_peer(
             timeout=request.timeout,
             bypass_circle=bypass,
             circle=request.circle,
+            from_peer_id=request.from_peer_id,
         )
         return QueryResponse(text=response_text)
     except ValueError as e:
@@ -198,7 +227,10 @@ async def notify_peer(
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="User-facing peer access denied — escalate via director (see CLAUDE.md user-facing communication policy)",
+            detail=(
+                "User-facing peer access denied — escalate via director "
+                "(see CLAUDE.md user-facing communication policy)"
+            ),
         )
 
     if request.interrupt:
@@ -212,6 +244,8 @@ async def notify_peer(
             bypass_circle=request.bypass_circle,
             circle=request.circle,
             interrupt=request.interrupt,
+            from_peer_id=request.from_peer_id,
+            to_peer_id=request.to_peer_id,
         )
         return OkResponse()
     except ValueError as e:
@@ -249,6 +283,7 @@ async def broadcast_message(
         text=request.text,
         exclude=request.exclude,
         bypass_circle=request.bypass_circle,
+        from_peer_id=request.from_peer_id,
     )
 
     return BroadcastResponse(sent_to=sent_to)

@@ -864,18 +864,106 @@ class PeerRegistry:
     # Circle access control (internal)
     # ------------------------------------------------------------------
 
-    def _resolve_from_peer_unlocked(
-        self, from_peer: str, target_peer: Peer, bypass_circle: bool
+    def _resolve_sender_unlocked(
+        self, from_peer: str, from_peer_id: str | None = None
     ) -> Peer | None:
-        """Resolve from_peer and check circle access. Must hold lock.
+        """Resolve the sending peer, preferring an authenticated peer_id.
 
-        Returns the resolved from_peer Peer object (or None if not found).
+        Must hold lock. ``from_peer_id`` is the sender's daemon-assigned
+        peer_id (propagated by the MCP server from its pane->peer_id lookup);
+        it is unambiguous even when the display_name collides across circles.
+        Falls back to a best-effort name lookup (which may itself be ambiguous)
+        for callers that do not supply a peer_id (CLI, legacy transports).
         """
-        from_peer_obj = self._lookup_peer_unlocked(
-            from_peer, circle=target_peer.circle
-        ) or self._lookup_peer_unlocked(from_peer)
-        self._check_circle_access_by_peers(from_peer_obj, target_peer, bypass_circle)
-        return from_peer_obj
+        if from_peer_id:
+            peer = self._lookup_peer_unlocked(from_peer_id)
+            if peer is not None:
+                return peer
+        if from_peer:
+            return self._lookup_peer_unlocked(from_peer)
+        return None
+
+    def _resolve_target_unlocked(
+        self,
+        to_peer: str,
+        *,
+        circle: str | None,
+        from_obj: Peer | None,
+        bypass_circle: bool,
+        to_peer_id: str | None = None,
+    ) -> Peer | None:
+        """Resolve the target peer with sender-circle auto-scoping. Must hold lock.
+
+        Resolution order:
+        1. ``to_peer_id`` (exact, unambiguous) wins outright when supplied.
+        2. Explicit ``circle`` wins over auto-scoping.
+        3. For a non-bypass authenticated sender, prefer a target in the
+           SENDER's own circle (so an ambiguous display_name resolves
+           within-circle — this is the leak fix). If none exists there, fall
+           back to an unscoped lookup so a genuine cross-circle attempt is
+           surfaced as a Circle boundary error by the guard (rather than a
+           silent foreign-circle delivery or a misleading Unknown peer).
+        """
+        if to_peer_id:
+            peer = self._lookup_peer_unlocked(to_peer_id)
+            if peer is not None:
+                return peer
+        if circle is not None:
+            return self._lookup_peer_unlocked(to_peer, circle=circle)
+        if from_obj is not None and not bypass_circle and not from_obj.bypasses_circles:
+            scoped = self._lookup_peer_unlocked(to_peer, circle=from_obj.circle)
+            if scoped is not None:
+                return scoped
+        return self._lookup_peer_unlocked(to_peer, circle=None)
+
+    def _resolve_pair_unlocked(
+        self,
+        from_peer: str,
+        to_peer: str,
+        *,
+        circle: str | None,
+        bypass_circle: bool,
+        from_peer_id: str | None = None,
+        to_peer_id: str | None = None,
+    ) -> tuple[Peer | None, Peer | None]:
+        """Resolve the (sender, target) Peer pair. Must hold lock.
+
+        Authenticated path (``from_peer_id`` supplied — the normal path for
+        mesh agents via the MCP server): resolve the sender EXACTLY by peer_id,
+        then scope target resolution to the sender's circle. This is the
+        beads-hqvm leak fix — an ambiguous target display_name resolves within
+        the sender's own circle instead of via a circle-blind preference pick.
+
+        Legacy path (no ``from_peer_id`` — CLI / telegram / slack / channel):
+        preserve the pre-hqvm behavior — resolve the target first, then resolve
+        the sender PREFERRING the target's circle. Keeps ambiguous-sender-name
+        routing working for callers that cannot supply an authenticated peer_id.
+        """
+        if from_peer_id:
+            from_obj = self._resolve_sender_unlocked(from_peer, from_peer_id)
+            peer = self._resolve_target_unlocked(
+                to_peer,
+                circle=circle,
+                from_obj=from_obj,
+                bypass_circle=bypass_circle,
+                to_peer_id=to_peer_id,
+            )
+            return from_obj, peer
+
+        # Legacy: target-first, sender preferring the target's circle.
+        if to_peer_id:
+            peer = self._lookup_peer_unlocked(to_peer_id) or self._lookup_peer_unlocked(
+                to_peer, circle=circle
+            )
+        else:
+            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
+        if peer is not None:
+            from_obj = self._lookup_peer_unlocked(
+                from_peer, circle=peer.circle
+            ) or self._lookup_peer_unlocked(from_peer)
+        else:
+            from_obj = self._resolve_sender_unlocked(from_peer)
+        return from_obj, peer
 
     def _check_circle_access_by_peers(
         self, from_obj: Peer | None, to_obj: Peer | None, bypass: bool
@@ -883,8 +971,15 @@ class PeerRegistry:
         """Check circle access given already-resolved Peer objects. Must hold lock."""
         if bypass:
             return
-        if not from_obj or not to_obj:
+        if not to_obj:
             return
+        if not from_obj:
+            # beads-hqvm DoD7: an unresolved sender on a non-bypass path must NOT
+            # get a free pass through the circle guard (closes early-return-on-None).
+            raise ValueError(
+                f"Circle boundary: unresolved sender cannot access "
+                f"{to_obj.display_name} ({to_obj.circle})"
+            )
         if from_obj.bypasses_circles or to_obj.bypasses_circles:
             return
         if from_obj.circle != to_obj.circle:
@@ -905,6 +1000,7 @@ class PeerRegistry:
         timeout: float = DEFAULT_QUERY_TIMEOUT,
         bypass_circle: bool = False,
         circle: str | None = None,
+        from_peer_id: str | None = None,
     ) -> str:
         """Send a query to a peer and wait for response.
 
@@ -913,13 +1009,16 @@ class PeerRegistry:
             TimeoutError: If no response within timeout
         """
         async with self._lock:
-            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
+            from_obj, peer = self._resolve_pair_unlocked(
+                from_peer, to_peer, circle=circle, bypass_circle=bypass_circle,
+                from_peer_id=from_peer_id,
+            )
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            from_obj = self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
+            self._check_circle_access_by_peers(from_obj, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
-            from_peer_id = from_obj.peer_id if from_obj else None
+            resolved_from_peer_id = from_obj.peer_id if from_obj else None
 
         formatted_query = (
             f"[Repowire Query from @{from_peer}]\n"
@@ -932,7 +1031,7 @@ class PeerRegistry:
             "query",
             {
                 "from": from_peer, "to": to_peer, "text": text,
-                "from_peer_id": from_peer_id, "to_peer_id": peer_id,
+                "from_peer_id": resolved_from_peer_id, "to_peer_id": peer_id,
                 "status": "pending",
             },
         )
@@ -951,7 +1050,7 @@ class PeerRegistry:
                 "response",
                 {
                     "from": to_peer, "to": from_peer,
-                    "from_peer_id": peer_id, "to_peer_id": from_peer_id,
+                    "from_peer_id": peer_id, "to_peer_id": resolved_from_peer_id,
                     "text": response[:100] + "..." if len(response) > 100 else response,
                     "correlation_id": query_event_id,
                 },
@@ -988,27 +1087,36 @@ class PeerRegistry:
         bypass_circle: bool = False,
         circle: str | None = None,
         interrupt: bool = False,
+        from_peer_id: str | None = None,
+        to_peer_id: str | None = None,
     ) -> None:
         """Send a notification to a peer (fire-and-forget).
+
+        ``to_peer_id`` targets a peer exactly (used by the AUTO-ACK reverse
+        route to reply to the authenticated original sender without re-incurring
+        the display_name ambiguity). ``from_peer_id`` authenticates the sender.
 
         Raises:
             ValueError: If peer not found or circle boundary violated
         """
         async with self._lock:
-            peer = self._lookup_peer_unlocked(to_peer, circle=circle)
+            from_obj, peer = self._resolve_pair_unlocked(
+                from_peer, to_peer, circle=circle, bypass_circle=bypass_circle,
+                from_peer_id=from_peer_id, to_peer_id=to_peer_id,
+            )
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
-            from_obj = self._resolve_from_peer_unlocked(from_peer, peer, bypass_circle)
+            self._check_circle_access_by_peers(from_obj, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
-            from_peer_id = from_obj.peer_id if from_obj else None
+            resolved_from_peer_id = from_obj.peer_id if from_obj else None
             from_peer_role = from_obj.role.value if from_obj and from_obj.role else None
 
         self.add_event(
             "notification",
             {
                 "from": from_peer, "to": to_peer, "text": text,
-                "from_peer_id": from_peer_id, "to_peer_id": peer_id,
+                "from_peer_id": resolved_from_peer_id, "to_peer_id": peer_id,
             },
         )
 
@@ -1019,6 +1127,7 @@ class PeerRegistry:
             text=text,
             interrupt=interrupt,
             from_peer_role=from_peer_role,
+            from_peer_id=resolved_from_peer_id,
         )
 
     async def broadcast(
@@ -1027,6 +1136,7 @@ class PeerRegistry:
         text: str,
         exclude: list[str] | None = None,
         bypass_circle: bool = False,
+        from_peer_id: str | None = None,
     ) -> list[str]:
         """Broadcast a message to all peers.
 
@@ -1038,13 +1148,18 @@ class PeerRegistry:
 
         exclude_session_ids: set[str] = set()
         async with self._lock:
-            from_peer_obj: Peer | None = None
+            # Resolve the sender by authenticated peer_id first (unambiguous),
+            # so the circle-filter below keys off the real sender circle even
+            # when the display_name collides across circles (beads-hqvm).
+            from_peer_obj: Peer | None = self._resolve_sender_unlocked(
+                from_peer, from_peer_id
+            )
             for name in exclude_names:
                 peer = self._lookup_peer_unlocked(name)
                 if peer:
                     exclude_session_ids.add(peer.peer_id)
-                    if name == from_peer:
-                        from_peer_obj = peer
+            if from_peer_obj is not None:
+                exclude_session_ids.add(from_peer_obj.peer_id)
 
             sender_bypasses = from_peer_obj and (bypass_circle or from_peer_obj.bypasses_circles)
             if not sender_bypasses and from_peer_obj:
@@ -1053,12 +1168,12 @@ class PeerRegistry:
                     if peer.circle != from_circle and not peer.bypasses_circles:
                         exclude_session_ids.add(sid)
 
-            from_peer_id = from_peer_obj.peer_id if from_peer_obj else None
+            resolved_from_peer_id = from_peer_obj.peer_id if from_peer_obj else None
         self.add_event(
             "broadcast",
             {
                 "from": from_peer, "text": text, "exclude": exclude,
-                "from_peer_id": from_peer_id,
+                "from_peer_id": resolved_from_peer_id,
             },
         )
 

@@ -141,13 +141,27 @@ class TestCircleAccessControl:
         result = await pm.query("peer-a", "peer-b", "hello", bypass_circle=True)
         assert result == "mock response"
 
-    async def test_unknown_peer_no_enforcement(self, mock_message_router):
-        """Unknown sender peer = no circle enforcement (CLI callers)."""
+    async def test_unknown_sender_non_bypass_blocked(self, mock_message_router):
+        """Unknown (unresolved) sender without bypass is BLOCKED (beads-hqvm DoD7).
+
+        Previously an unresolved from_obj got a free pass through the circle
+        guard (early-return-on-None). That hole is now closed: a non-bypass
+        caller whose identity cannot be resolved is denied. Real CLI callers
+        reach the daemon with bypass=True (routes/messages.py auto-bypass), so
+        they are unaffected — see test_unknown_sender_with_bypass_allowed.
+        """
         pm = PeerRegistry(config=Config(), message_router=mock_message_router)
         await self._register(pm, "peer-b", "staging")
 
-        # "cli" is not registered, so no enforcement
-        result = await pm.query("cli", "peer-b", "hello")
+        with pytest.raises(ValueError, match="Circle boundary"):
+            await pm.query("cli", "peer-b", "hello")
+
+    async def test_unknown_sender_with_bypass_allowed(self, mock_message_router):
+        """CLI callers (bypass=True) are unaffected by the guard hardening."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "peer-b", "staging")
+
+        result = await pm.query("cli", "peer-b", "hello", bypass_circle=True)
         assert result == "mock response"
 
 
@@ -176,7 +190,8 @@ class TestSameNameDifferentCircles:
         await self._register(pm, "sid-a", "myproject", "teamA")
         await self._register(pm, "sid-b", "myproject", "teamB")
 
-        await pm.query("cli", "myproject", "hello", circle="teamA")
+        # CLI-style caller (unresolved sender) reaches the daemon with bypass.
+        await pm.query("cli", "myproject", "hello", circle="teamA", bypass_circle=True)
 
         mock_message_router.send_query.assert_called_once()
         _, kwargs = mock_message_router.send_query.call_args
@@ -196,7 +211,7 @@ class TestSameNameDifferentCircles:
         await self._register(pm, "sid-a", "myproject", "teamA")
         await self._register(pm, "sid-b", "myproject", "teamB")
 
-        await pm.notify("cli", "myproject", "hi", circle="teamB")
+        await pm.notify("cli", "myproject", "hi", circle="teamB", bypass_circle=True)
 
         mock_message_router.send_notification.assert_called_once()
         _, kwargs = mock_message_router.send_notification.call_args
@@ -215,7 +230,7 @@ class TestSameNameDifferentCircles:
         async with pm._lock:
             pm._peers["sid-a"].status = PeerStatus.OFFLINE
 
-        await pm.notify("cli", "myproject", "hi")
+        await pm.notify("cli", "myproject", "hi", bypass_circle=True)
 
         mock_message_router.send_notification.assert_called_once()
         _, kwargs = mock_message_router.send_notification.call_args
@@ -286,6 +301,165 @@ class TestFromPeerCircleLookup:
 
         with pytest.raises(ValueError, match="Circle boundary"):
             await pm.query("orchestrator", "worker", "hello")
+
+
+# ---------------------------------------------------------------------------
+# Authenticated sender identity (from_peer_id) — circle-scoped resolution
+# beads-hqvm: fix the cross-circle LEAK when BOTH to_peer and from_peer collide
+# ---------------------------------------------------------------------------
+
+
+class TestAuthenticatedSenderResolution:
+    """from_peer_id (authenticated identity, pane->peer_id) scopes target
+    resolution to the SENDER's circle.
+
+    This closes the leak where, with both display_names colliding, the target
+    preference-tiebreak picks the wrong-circle namesake and the sender then
+    resolves (by name) to that same wrong circle, so the circle guard sees a
+    spurious same-circle pair and silently delivers across circles.
+    """
+
+    @staticmethod
+    async def _register(pm, sid, name, circle, role=PeerRole.AGENT):
+        peer = Peer(
+            peer_id=sid, display_name=name, path=f"/{name}",
+            machine="localhost", circle=circle, role=role,
+        )
+        await pm.register_peer(peer)
+
+    @staticmethod
+    def _bias_preference_to(pm, *winning_sids):
+        """Make the given session_ids win the preference tiebreak (mock 'connected')."""
+        transport = MagicMock()
+        transport.is_connected = lambda sid: sid in winning_sids
+        pm._transport = transport
+
+    async def test_double_collision_notify_routes_to_sender_circle(self, mock_message_router):
+        """T1/T8: both names collide; from_peer_id -> target scoped to sender circle."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-abt-head", "backend-head", "circle-abt")
+        await self._register(pm, "sid-abt-worker", "backend-worker", "circle-abt")
+        await self._register(pm, "sid-zeon-head", "backend-head", "circle-zeon")
+        await self._register(pm, "sid-zeon-worker", "backend-worker", "circle-zeon")
+        # Without scoping the wrong-circle (abt) namesakes would win preference.
+        self._bias_preference_to(pm, "sid-abt-head", "sid-abt-worker")
+
+        await pm.notify(
+            from_peer="backend-worker",
+            from_peer_id="sid-zeon-worker",
+            to_peer="backend-head",
+            text="ACK",
+        )
+
+        mock_message_router.send_notification.assert_called_once()
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-zeon-head"
+
+    async def test_double_collision_no_silent_foreign_delivery(self, mock_message_router):
+        """T2: never silently deliver to the foreign-circle namesake."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-abt-head", "backend-head", "circle-abt")
+        await self._register(pm, "sid-zeon-head", "backend-head", "circle-zeon")
+        await self._register(pm, "sid-zeon-worker", "backend-worker", "circle-zeon")
+        self._bias_preference_to(pm, "sid-abt-head")
+
+        await pm.notify(
+            from_peer="backend-worker",
+            from_peer_id="sid-zeon-worker",
+            to_peer="backend-head",
+            text="ACK",
+        )
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] != "sid-abt-head"
+
+    async def test_double_collision_query_routes_to_sender_circle(self, mock_message_router):
+        """T1 (query/ask_peer path): scopes target to sender circle."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-abt-head", "backend-head", "circle-abt")
+        await self._register(pm, "sid-zeon-head", "backend-head", "circle-zeon")
+        await self._register(pm, "sid-zeon-worker", "backend-worker", "circle-zeon")
+        self._bias_preference_to(pm, "sid-abt-head")
+
+        await pm.query(
+            "backend-worker", "backend-head", "hi", from_peer_id="sid-zeon-worker"
+        )
+        _, kwargs = mock_message_router.send_query.call_args
+        assert kwargs["to_session_id"] == "sid-zeon-head"
+
+    async def test_pm_pm_collision_both_circles(self, mock_message_router):
+        """T8: pm<->pm collision regression — sender in zeon hits zeon-pm, not drafter-pm."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-drafter-pm", "pm-claude-code", "project-drafter")
+        await self._register(pm, "sid-zeon-pm", "pm-claude-code", "project-zeon")
+        await self._register(pm, "sid-zeon-head", "backend-head", "project-zeon")
+        self._bias_preference_to(pm, "sid-drafter-pm")
+
+        await pm.notify(
+            from_peer="backend-head",
+            from_peer_id="sid-zeon-head",
+            to_peer="pm-claude-code",
+            text="status",
+        )
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-zeon-pm"
+
+    async def test_unresolved_sender_non_bypass_blocked(self, mock_message_router):
+        """T3/DoD7: None from_obj + non-bypass -> blocked (closes early-return-on-None)."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-b", "peer-b", "staging")
+        # 'ghost-sender' is not registered; bypass defaults False.
+        with pytest.raises(ValueError, match="Circle boundary"):
+            await pm.query("ghost-sender", "peer-b", "hi")
+
+    async def test_unresolved_sender_with_bypass_allowed(self, mock_message_router):
+        """Guard hardening does not affect bypass callers (CLI auto-bypass)."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-b", "peer-b", "staging")
+        result = await pm.query("cli", "peer-b", "hi", bypass_circle=True)
+        assert result == "mock response"
+
+    async def test_bypass_sender_not_scoped_to_its_circle(self, mock_message_router):
+        """T4: service/orchestrator sender is NOT scoped — reaches other circles."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-svc", "telegram", "global", role=PeerRole.SERVICE)
+        await self._register(pm, "sid-w", "worker", "dev")
+
+        await pm.notify("telegram", "worker", "hi", from_peer_id="sid-svc")
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-w"
+
+    async def test_explicit_circle_overrides_sender_scope(self, mock_message_router):
+        """T5: explicit circle= wins over sender-circle auto-scope."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-a", "myproject", "teamA")
+        await self._register(pm, "sid-b", "myproject", "teamB")
+        await self._register(pm, "sid-dir", "director", "global", role=PeerRole.ORCHESTRATOR)
+
+        await pm.notify(
+            "director", "myproject", "hi", circle="teamB", from_peer_id="sid-dir"
+        )
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-b"
+
+    async def test_notify_to_peer_id_targets_exactly(self, mock_message_router):
+        """DoD6 plumbing: notify(to_peer_id=...) resolves the exact peer, no ambiguity."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-abt-worker", "backend-worker", "circle-abt")
+        await self._register(pm, "sid-zeon-worker", "backend-worker", "circle-zeon")
+        await self._register(pm, "sid-zeon-head", "backend-head", "circle-zeon")
+        self._bias_preference_to(pm, "sid-abt-worker")
+
+        # AUTO-ACK reverse route: zeon-head ACKs back to the exact original sender id.
+        await pm.notify(
+            from_peer="backend-head",
+            from_peer_id="sid-zeon-head",
+            to_peer="backend-worker",
+            to_peer_id="sid-zeon-worker",
+            text="[AUTO-ACK]",
+            bypass_circle=True,
+        )
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-zeon-worker"
 
 
 # ---------------------------------------------------------------------------
