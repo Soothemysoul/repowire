@@ -6,11 +6,19 @@ from __future__ import annotations
 import fcntl
 import json
 import sys
+import time
 from pathlib import Path
 
 from repowire.hooks._tmux import get_pane_id
 from repowire.hooks.adapters import hook_output, normalize
-from repowire.hooks.utils import daemon_post, get_display_name, pending_cid_path, update_status
+from repowire.hooks.utils import (
+    daemon_post,
+    get_display_name,
+    pending_cid_path,
+    sweep_overdue_acks,
+    tmux_send_keys,
+    update_status,
+)
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
 
 
@@ -37,6 +45,22 @@ def _pop_pending_cid(pane_id: str) -> str | None:
                 fcntl.flock(lock_file, fcntl.LOCK_UN)
     except (json.JSONDecodeError, OSError, IndexError):
         return None
+
+
+def _sweep_overdue_acks(pane_id: str) -> None:
+    """Defense-in-depth duplicate of the ws-hook ACK-watchdog (beads-nfap.2).
+
+    The ws-hook hosts the always-on watchdog, but if that process died between
+    restarts or inside the supervise window, un-ACKed notifies would never
+    escalate. The Stop hook fires at every turn boundary, so it re-sweeps the
+    same per-pane ack-state. ``sweep_overdue_acks`` pops overdue entries
+    atomically, so whichever sweeper (ws-hook or stop-hook) pops one first owns
+    its single escalation — the two paths never double-escalate. No-op under the
+    REPOWIRE_RECEIPT_INLINE rollback flag (handled inside the sweep).
+    """
+    sweep_overdue_acks(
+        pane_id, now=time.time(), inject=lambda text: tmux_send_keys(pane_id, text)
+    )
 
 
 def _post_chat_turn(
@@ -117,6 +141,11 @@ def main(backend: str = "claude-code") -> int:
         if cid:
             resp_payload["correlation_id"] = cid
         daemon_post("/response", resp_payload)
+
+    # beads-nfap.2: defense-in-depth re-sweep of overdue un-ACKed notifies at the
+    # turn boundary, in case the ws-hook watchdog process is down.
+    if pane_id:
+        _sweep_overdue_acks(pane_id)
 
     hook_output(backend)
     return 0

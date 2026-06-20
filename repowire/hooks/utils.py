@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import fcntl
 import json
+import logging
 import os
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -16,6 +19,8 @@ from typing import Any
 from repowire.config.models import DEFAULT_DAEMON_URL
 
 DAEMON_URL = os.environ.get("REPOWIRE_DAEMON_URL", DEFAULT_DAEMON_URL)
+
+logger = logging.getLogger(__name__)
 
 
 def get_pane_file(pane_id: str | None) -> str:
@@ -257,6 +262,118 @@ def clear_ack_state(pane_id: str | None) -> None:
     for path in (ack_state_path(pane_id), _ack_state_lock_path(pane_id)):
         with suppress(OSError):
             path.unlink()
+
+
+# --- ACK-watchdog escalation (shared by the ws-hook watchdog and stop-hook sweep) ---
+#
+# beads-nfap.1 introduced the always-on ws-hook watchdog; beads-nfap.2 adds a
+# duplicate sweep at every Stop-hook turn boundary as defense-in-depth (covers a
+# dead ws-hook process). Both paths share the helpers below so the escalation
+# text and the no-double-escalation logic live in exactly one place.
+
+
+def receipt_inline_enabled() -> bool:
+    """Rollback switch (beads-nfap.1, mesh-safety): REPOWIRE_RECEIPT_INLINE=1 keeps
+    the legacy inline pane-injection of receipts (and disables the watchdog),
+    giving an instant revert if the out-of-band path misbehaves in production."""
+    return os.environ.get("REPOWIRE_RECEIPT_INLINE", "") == "1"
+
+
+def escalation_text(correlation_id: str, to_peer: str) -> str:
+    """Single actionable escalation injected when a notify goes un-ACKed."""
+    return (
+        f"[repowire] notify {correlation_id} → {to_peer} не подтверждён "
+        "(нет ACK о доставке за отведённое время). Доставка могла не пройти — "
+        "проверь получателя и при необходимости повтори отправку."
+    )
+
+
+def sweep_overdue_acks(
+    pane_id: str | None, *, now: float, inject: Callable[[str], Any]
+) -> list[dict[str, Any]]:
+    """Escalate every overdue un-ACKed pending exactly once, injecting via ``inject``.
+
+    Shared by the ws-hook watchdog (always-on driver) and the stop-hook sweep
+    (defense-in-depth). ``pop_overdue_acks`` removes the entries it returns in the
+    same locked transaction, so whichever sweeper pops an entry first owns its
+    single escalation — the two paths never double-escalate. No-op under the
+    REPOWIRE_RECEIPT_INLINE rollback flag (pendings are left untouched). Returns
+    the escalated entries.
+    """
+    if receipt_inline_enabled():
+        return []
+    overdue = pop_overdue_acks(pane_id, now=now)
+    for entry in overdue:
+        inject(escalation_text(entry["correlation_id"], entry.get("to_peer", "unknown")))
+    return overdue
+
+
+def wait_for_normal_mode(pane_id: str, max_retries: int = 20, sleep_s: float = 0.05) -> None:
+    """Poll until pane exits copy-mode or timeout.
+
+    Needed because tmux processes 'send-keys -X cancel' asynchronously — the pane
+    may still report pane_in_mode=1 for a brief window after cancel is sent.
+    Without this wait, the immediately following 'send-keys -l' arrives while
+    copy-mode is still active and its characters are interpreted as vi commands
+    (f=jump, t=jump-to, :=goto-line, /=search …) instead of literal input.
+    """
+    for _ in range(max_retries):
+        result = subprocess.run(
+            ["tmux", "display-message", "-t", pane_id, "-p", "#{pane_in_mode}"],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0 or result.stdout.strip() == "0":
+            return
+        time.sleep(sleep_s)
+    logger.warning(
+        "Pane %s still in copy-mode after %.1fs, injecting anyway",
+        pane_id,
+        max_retries * sleep_s,
+    )
+
+
+def tmux_send_keys(pane_id: str, text: str, interrupt: bool = False) -> bool:
+    """Send keys to a tmux pane via subprocess.
+
+    Default path (interrupt=False) mirrors direct-stdin semantics: cancel
+    copy-mode if active, paste text via bracketed-paste, Enter. No Escape —
+    Escape cancels Claude's in-flight turn, so sending it unconditionally
+    turned every hook injection into an interrupt (beads-61w forensics).
+    The tty buffer itself becomes the natural per-session message queue.
+
+    interrupt=True re-adds Escape *before* paste so the cancel lands first
+    and the paste is consumed as the receiver's next input (opt-in escape
+    hatch for genuine emergencies).
+    """
+    try:
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "-X", "cancel"],
+            capture_output=True,
+        )
+        wait_for_normal_mode(pane_id)
+        if interrupt:
+            subprocess.run(
+                ["tmux", "send-keys", "-t", pane_id, "Escape"],
+                capture_output=True,
+                check=True,
+            )
+            time.sleep(0.1)
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "-l", text],
+            capture_output=True,
+            check=True,
+        )
+        time.sleep(0.5)
+        subprocess.run(
+            ["tmux", "send-keys", "-t", pane_id, "Enter"],
+            capture_output=True,
+            check=True,
+        )
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        logger.error(f"Failed to send keys to {pane_id}: {e}")
+        return False
 
 
 def _log_daemon_error(method: str, path: str, exc: Exception) -> None:
