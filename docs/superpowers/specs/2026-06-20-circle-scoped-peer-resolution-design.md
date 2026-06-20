@@ -218,6 +218,17 @@ DoD 1-8 + регрессы. Файл: `tests/test_circles.py` (+ при необ
 4. **Upstream-PR:** делать ли отдельный PR в `Soothemysoul/repowire` помимо
    fork-патча? (на усмотрение — бриф допускает.)
 
+### Решения sign-off директора (notif-c6b2c26c, 2026-06-20)
+
+1. Guard hardening (unknown sender + non-bypass = blocked, DoD 7) — **одобрено**,
+   обновить `test_unknown_peer_no_enforcement`.
+2. Поправка механизма pane→peer_id (`from_peer_id` вместо WS-сессии) —
+   **благословлена** как корректный «authenticated identity»; основной фикс.
+3. Scope Part C/D/E (AUTO-ACK reverse-route → `message_router` + `websocket_hook`) —
+   **одобрено**, покрыть T6/T7.
+4. Upstream-PR — **НЕ в этом PR.** Этот PR = только fork-патч. Upstream-citizenship
+   вынесен в follow-up **beads-4wuz** (после мержа fork-патча).
+
 ---
 
 ## 7. Риски
