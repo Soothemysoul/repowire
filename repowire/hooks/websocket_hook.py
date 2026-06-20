@@ -215,6 +215,10 @@ def _ack_body(
         "to_peer": from_peer,
         "text": text,
         "bypass_circle": True,
+        # beads-fqus: mark this as a reverse-route receipt so the daemon can drop
+        # it (rather than leak it to a foreign-circle namesake) when the original
+        # sender's peer_id is unknown and the display_name is ambiguous.
+        "reverse_receipt": True,
     }
     if from_peer_id:
         body["to_peer_id"] = from_peer_id

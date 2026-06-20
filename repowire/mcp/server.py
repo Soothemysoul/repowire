@@ -95,15 +95,34 @@ async def _get_my_peer_name() -> str:
 async def _get_my_peer_id() -> str | None:
     """Return our authenticated peer_id (beads-hqvm), or None if unresolved.
 
-    Anchored to the pane->peer_id daemon lookup performed by _get_my_peer_name.
-    Unlike the display_name, the peer_id is globally unique, so propagating it as
-    from_peer_id lets the daemon resolve THIS sender unambiguously even when the
-    display_name collides across circles. None when identity cannot be resolved
-    (e.g. no tmux pane) — callers then simply omit from_peer_id.
+    Anchored to the pane->peer_id daemon lookup. Unlike the display_name, the
+    peer_id is globally unique, so propagating it as from_peer_id lets the daemon
+    resolve THIS sender unambiguously even when the display_name collides across
+    circles. None when identity cannot be resolved (e.g. no tmux pane) — callers
+    then simply omit from_peer_id.
+
+    beads-fqus: re-resolve the pane->peer_id directly when it is still unknown,
+    instead of routing through _get_my_peer_name(). That helper short-circuits on
+    a cached display_name, so once the name was filled by the cwd fallback (pane
+    lookup raced/failed on first resolution) the peer_id would stay None for the
+    rest of the session — and a missing from_peer_id misroutes the reverse
+    AUTO-ACK to a foreign-circle namesake. Retry every call until it resolves,
+    then cache; never cache None.
     """
-    if _cached_peer_id is None:
-        # Populates _cached_peer_id as a side effect when a pane record exists.
-        await _get_my_peer_name()
+    global _cached_peer_id
+    if _cached_peer_id is not None:
+        return _cached_peer_id
+    pane_id = get_pane_id()
+    if pane_id:
+        try:
+            result = await daemon_request(
+                "GET", f"/peers/by-pane/{quote(pane_id, safe='')}"
+            )
+            peer_id = result.get("peer_id")
+            if peer_id:
+                _cached_peer_id = peer_id
+        except Exception:
+            pass
     return _cached_peer_id
 
 

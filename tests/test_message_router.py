@@ -132,3 +132,18 @@ class TestBroadcast:
         transport.send.side_effect = fail_second
         sent = await router.broadcast("sender", "hello")
         assert len(sent) == 1
+
+    async def test_broadcast_threads_from_peer_id_in_frame(self, router, transport):
+        """beads-fqus: the authenticated sender peer_id rides the broadcast WS frame
+        so the receiver's AUTO-ACK can reply to the exact original sender."""
+        transport.get_all_sessions.return_value = ["sid-1"]
+        await router.broadcast("sender", "hi", from_peer_id="sid-sender")
+        msg = transport.send.call_args[0][1]
+        assert msg["from_peer_id"] == "sid-sender"
+
+    async def test_broadcast_omits_from_peer_id_when_none(self, router, transport):
+        """When identity is unknown, the key is omitted (smaller frame, no None-stuff)."""
+        transport.get_all_sessions.return_value = ["sid-1"]
+        await router.broadcast("sender", "hi")
+        msg = transport.send.call_args[0][1]
+        assert "from_peer_id" not in msg

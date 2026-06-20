@@ -271,3 +271,20 @@ async def test_auto_ack_omits_to_peer_id_when_absent(
     await handle_message(data, "%1")
     body = captured_ack_posts[0]["body"]
     assert "to_peer_id" not in body
+
+
+@pytest.mark.asyncio
+async def test_auto_ack_marks_reverse_receipt(
+    captured_send_keys, captured_ack_posts
+):
+    """beads-fqus: the reverse-route receipt carries reverse_receipt=True so the
+    daemon can drop it (rather than leak) when the original sender's peer_id is
+    unknown and the display_name is ambiguous."""
+    data = {
+        "type": "notify",
+        "from_peer": "director-claude-code",
+        "text": "[#notif-33334444] hi",
+    }
+    await handle_message(data, "%1")
+    body = captured_ack_posts[0]["body"]
+    assert body["reverse_receipt"] is True

@@ -1099,12 +1099,18 @@ class PeerRegistry:
         interrupt: bool = False,
         from_peer_id: str | None = None,
         to_peer_id: str | None = None,
+        reverse_receipt: bool = False,
     ) -> None:
         """Send a notification to a peer (fire-and-forget).
 
         ``to_peer_id`` targets a peer exactly (used by the AUTO-ACK reverse
         route to reply to the authenticated original sender without re-incurring
         the display_name ambiguity). ``from_peer_id`` authenticates the sender.
+
+        ``reverse_receipt`` marks the call as an AUTO-(N)ACK reverse-route
+        receipt (set only by the hook's receipt emitter). It gates the
+        beads-fqus anti-leak drop below so legitimate CLI/explicit-circle bypass
+        notifies are not affected.
 
         Raises:
             ValueError: If peer not found or circle boundary violated
@@ -1116,6 +1122,30 @@ class PeerRegistry:
             )
             if not peer:
                 raise ValueError(f"Unknown peer: {to_peer}")
+            # beads-fqus: reverse-route receipt anti-leak (defence-in-depth).
+            # An AUTO-(N)ACK reverse receipt that could not thread the original
+            # sender's authenticated peer_id (no to_peer_id) and whose target
+            # display_name is ambiguous (namesakes across circles) would resolve
+            # via a circle-blind preference tiebreak — leaking the receipt to a
+            # foreign-circle namesake (the exact incident). Drop the best-effort
+            # receipt instead of leaking it. Gated on ``reverse_receipt`` so a
+            # legitimate CLI/explicit-circle bypass notify (which intentionally
+            # relies on the preference tiebreak) is untouched.
+            if (
+                reverse_receipt
+                and to_peer_id is None
+                and circle is None
+                and sum(
+                    1 for p in self._peers.values() if p.display_name == to_peer
+                ) > 1
+            ):
+                logger.warning(
+                    "Dropping reverse-route receipt to ambiguous '%s' "
+                    "(multiple namesakes, no authenticated to_peer_id) — "
+                    "refusing blind cross-circle delivery",
+                    to_peer,
+                )
+                return
             self._check_circle_access_by_peers(from_obj, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
@@ -1191,6 +1221,7 @@ class PeerRegistry:
             from_peer=from_peer,
             text=text,
             exclude=exclude_session_ids,
+            from_peer_id=resolved_from_peer_id,
         )
 
         async with self._lock:

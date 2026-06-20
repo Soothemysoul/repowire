@@ -149,6 +149,7 @@ class MessageRouter:
         from_peer: str,
         text: str,
         exclude: set[str] | None = None,
+        from_peer_id: str | None = None,
     ) -> list[str]:
         """Broadcast to all connected peers.
 
@@ -156,6 +157,11 @@ class MessageRouter:
             from_peer: Display name of sender
             text: Broadcast text
             exclude: Set of session IDs to exclude
+            from_peer_id: Authenticated peer_id of the sender (beads-fqus).
+                Threaded into the WS frame — exactly like send_notification —
+                so each receiver's AUTO-ACK can reply to the exact original
+                sender by peer_id instead of misrouting by ambiguous
+                display_name.
 
         Returns:
             List of session IDs that received the broadcast
@@ -166,6 +172,8 @@ class MessageRouter:
             "from_peer": from_peer,
             "text": text,
         }
+        if from_peer_id is not None:
+            message["from_peer_id"] = from_peer_id
 
         async def _send_one(session_id: str) -> str | None:
             try:
