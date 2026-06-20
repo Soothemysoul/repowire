@@ -27,6 +27,11 @@ _http_client: httpx.AsyncClient | None = None
 # Cached peer name: resolved lazily from env var, pane lookup, or registration
 _cached_peer_name: str | None = None
 
+# Cached authenticated peer_id (beads-hqvm): resolved from the pane->peer record.
+# Propagated as from_peer_id so the daemon resolves THIS sender unambiguously and
+# scopes target resolution to our circle, even when the display_name collides.
+_cached_peer_id: str | None = None
+
 # Lazy registration: ensure peer is registered on first MCP tool use
 _registered: bool = False
 
@@ -64,7 +69,7 @@ async def _get_my_peer_name() -> str:
 
     Priority: REPOWIRE_DISPLAY_NAME env var > pane-based daemon lookup > cwd folder name.
     """
-    global _cached_peer_name
+    global _cached_peer_name, _cached_peer_id
     if _cached_peer_name is not None:
         return _cached_peer_name
     # Pane-based lookup is most authoritative (handles suffix collisions)
@@ -75,12 +80,31 @@ async def _get_my_peer_name() -> str:
             name = result.get("display_name") or result.get("peer_id")
             if name:
                 _cached_peer_name = name
+                # Cache the authenticated peer_id alongside the name (beads-hqvm).
+                peer_id = result.get("peer_id")
+                if peer_id:
+                    _cached_peer_id = peer_id
                 return name
         except Exception:
             pass
     # Fall back to env var (set by session handler) or cwd folder name
     _cached_peer_name = get_display_name()
     return _cached_peer_name
+
+
+async def _get_my_peer_id() -> str | None:
+    """Return our authenticated peer_id (beads-hqvm), or None if unresolved.
+
+    Anchored to the pane->peer_id daemon lookup performed by _get_my_peer_name.
+    Unlike the display_name, the peer_id is globally unique, so propagating it as
+    from_peer_id lets the daemon resolve THIS sender unambiguously even when the
+    display_name collides across circles. None when identity cannot be resolved
+    (e.g. no tmux pane) — callers then simply omit from_peer_id.
+    """
+    if _cached_peer_id is None:
+        # Populates _cached_peer_id as a side effect when a pane record exists.
+        await _get_my_peer_name()
+    return _cached_peer_id
 
 
 async def _ensure_registered() -> None:
@@ -205,11 +229,14 @@ def create_mcp_server() -> FastMCP:
         """
         await _ensure_registered()
         from_peer = await _get_my_peer_name()
+        from_peer_id = await _get_my_peer_id()
         body: dict = {
             "from_peer": from_peer,
             "to_peer": peer_name,
             "text": query,
         }
+        if from_peer_id is not None:
+            body["from_peer_id"] = from_peer_id
         if circle is not None:
             body["circle"] = circle
         result = await daemon_request("POST", "/query", body)
@@ -249,6 +276,7 @@ def create_mcp_server() -> FastMCP:
         """
         await _ensure_registered()
         from_peer = await _get_my_peer_name()
+        from_peer_id = await _get_my_peer_id()
         correlation_id = f"notif-{uuid4().hex[:8]}"
         body: dict = {
             "from_peer": from_peer,
@@ -256,6 +284,8 @@ def create_mcp_server() -> FastMCP:
             "text": f"[#{correlation_id}] {message}",
             "interrupt": interrupt,
         }
+        if from_peer_id is not None:
+            body["from_peer_id"] = from_peer_id
         if circle is not None:
             body["circle"] = circle
         await daemon_request("POST", "/notify", body)
@@ -279,14 +309,14 @@ def create_mcp_server() -> FastMCP:
         """
         await _ensure_registered()
         from_peer = await _get_my_peer_name()
-        result = await daemon_request(
-            "POST",
-            "/broadcast",
-            {
-                "from_peer": from_peer,
-                "text": message,
-            },
-        )
+        from_peer_id = await _get_my_peer_id()
+        body: dict = {
+            "from_peer": from_peer,
+            "text": message,
+        }
+        if from_peer_id is not None:
+            body["from_peer_id"] = from_peer_id
+        result = await daemon_request("POST", "/broadcast", body)
         sent_to = result.get("sent_to", [])
         return f"Broadcast sent to: {', '.join(sent_to) if sent_to else 'no peers online'}"
 

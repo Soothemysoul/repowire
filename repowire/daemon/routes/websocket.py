@@ -40,9 +40,13 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 
     Protocol (Daemon -> Client):
     - connected: {type, session_id}
-    - query: {type, correlation_id, from_peer, text}
-    - notify: {type, from_peer, text}
+    - query: {type, correlation_id, from_peer, from_peer_id?, text}
+    - notify: {type, from_peer, from_peer_id?, text}
     - broadcast: {type, from_peer, text}
+
+    ``from_peer_id`` (beads-hqvm) carries the sender's authenticated peer_id so
+    the receiver's AUTO-ACK can reply to the exact original sender by peer_id,
+    avoiding cross-circle ACK misrouting under display_name collisions.
     """
     await websocket.accept()
 

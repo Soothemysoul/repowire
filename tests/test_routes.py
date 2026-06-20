@@ -320,8 +320,20 @@ class TestNotify:
         assert r.status_code == 200
         name = r.json()["display_name"]
 
+        # Register the sender too (same circle) so the circle guard passes and
+        # we actually reach transport.send — which raises because ghostpeer has
+        # no WebSocket connection. (beads-hqvm: an unresolved non-bypass sender
+        # is now blocked at the circle guard, so the sender must be registered.)
+        rs = await client.post("/peers", json={
+            "name": "sender",
+            "path": "/tmp/sender",
+            "circle": "default",
+            "backend": "claude-code",
+        })
+        sender_name = rs.json()["display_name"]
+
         r = await client.post("/notify", json={
-            "from_peer": "sender",
+            "from_peer": sender_name,
             "to_peer": name,
             "text": "hello",
         })

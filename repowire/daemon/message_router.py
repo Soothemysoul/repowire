@@ -32,6 +32,7 @@ class MessageRouter:
         to_peer_name: str,
         text: str,
         timeout: float = DEFAULT_QUERY_TIMEOUT,
+        from_peer_id: str | None = None,
     ) -> str:
         """Send query and wait for response.
 
@@ -41,6 +42,9 @@ class MessageRouter:
             to_peer_name: Display name of recipient (for logging)
             text: Query text
             timeout: Timeout in seconds
+            from_peer_id: Authenticated peer_id of the sender (beads-hqvm),
+                threaded to the receiver so its AUTO-ACK can reply to the exact
+                original sender by peer_id (avoids cross-circle ACK misrouting).
 
         Returns:
             Response text
@@ -72,6 +76,8 @@ class MessageRouter:
             "from_peer": from_peer,
             "text": text,
         }
+        if from_peer_id is not None:
+            message["from_peer_id"] = from_peer_id
 
         try:
             await self._transport.send(to_session_id, message)
@@ -101,6 +107,7 @@ class MessageRouter:
         text: str,
         interrupt: bool = False,
         from_peer_role: str | None = None,
+        from_peer_id: str | None = None,
     ) -> None:
         """Send notification (fire-and-forget).
 
@@ -115,6 +122,10 @@ class MessageRouter:
             from_peer_role: Sender peer role (agent/service/orchestrator/…).
                 Used receiver-side to skip auto-ACK back to service peers
                 (telegram, brain-admin) that have no turn-concept.
+            from_peer_id: Authenticated peer_id of the sender (beads-hqvm).
+                Threaded to the receiver so its AUTO-ACK can reply to the exact
+                original sender by peer_id, avoiding the display_name ambiguity
+                that misroutes ACKs across circles.
 
         Raises:
             TransportError: If send fails
@@ -127,6 +138,8 @@ class MessageRouter:
         }
         if from_peer_role is not None:
             message["from_peer_role"] = from_peer_role
+        if from_peer_id is not None:
+            message["from_peer_id"] = from_peer_id
 
         await self._transport.send(to_session_id, message)
         logger.info(f"Notification sent: {from_peer} -> {to_peer_name}")
