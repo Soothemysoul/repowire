@@ -441,6 +441,28 @@ class TestAuthenticatedSenderResolution:
         _, kwargs = mock_message_router.send_notification.call_args
         assert kwargs["to_session_id"] == "sid-b"
 
+    async def test_intent_ack_reply_scopes_to_receiver_circle(self, mock_message_router):
+        """T7: intent-ACK (receiver-LLM replies to the original sender's NAME) is
+        fixed transitively — the authenticated receiver's reply scopes to its own
+        circle, hitting the correct same-circle sender, not a foreign namesake."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-abt-worker", "backend-worker", "circle-abt")
+        await self._register(pm, "sid-zeon-worker", "backend-worker", "circle-zeon")
+        await self._register(pm, "sid-zeon-head", "backend-head", "circle-zeon")
+        # Bias so the wrong-circle (abt) worker would win a blind preference pick.
+        self._bias_preference_to(pm, "sid-abt-worker")
+
+        # zeon-head replies (intent-ACK) to "backend-worker" by name, no explicit
+        # circle, authenticated by its own peer_id.
+        await pm.notify(
+            from_peer="backend-head",
+            from_peer_id="sid-zeon-head",
+            to_peer="backend-worker",
+            text="ACK notif-x",
+        )
+        _, kwargs = mock_message_router.send_notification.call_args
+        assert kwargs["to_session_id"] == "sid-zeon-worker"
+
     async def test_notify_to_peer_id_targets_exactly(self, mock_message_router):
         """DoD6 plumbing: notify(to_peer_id=...) resolves the exact peer, no ambiguity."""
         pm = PeerRegistry(config=Config(), message_router=mock_message_router)

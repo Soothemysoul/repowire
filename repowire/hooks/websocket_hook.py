@@ -201,25 +201,46 @@ async def _daemon_post(path: str, body: dict) -> None:
         logger.debug("auto-ACK post failed: %s", e)
 
 
+def _ack_body(
+    *, my_name: str, from_peer: str, from_peer_id: str | None, text: str
+) -> dict:
+    """Build the AUTO-(N)ACK /notify body.
+
+    beads-hqvm DoD6: when the original sender's authenticated peer_id is known
+    (threaded through the WS payload), target it exactly via to_peer_id so the
+    receipt cannot misroute to a foreign-circle namesake of from_peer.
+    """
+    body: dict = {
+        "from_peer": my_name,
+        "to_peer": from_peer,
+        "text": text,
+        "bypass_circle": True,
+    }
+    if from_peer_id:
+        body["to_peer_id"] = from_peer_id
+    return body
+
+
 async def _emit_auto_ack(
     *,
     correlation_id: str,
     from_peer: str,
     my_name: str,
     interrupt: bool,
+    from_peer_id: str | None = None,
 ) -> None:
     status = "interrupted" if interrupt else "queued"
     await _daemon_post(
         "/notify",
-        {
-            "from_peer": my_name,
-            "to_peer": from_peer,
-            "text": (
+        _ack_body(
+            my_name=my_name,
+            from_peer=from_peer,
+            from_peer_id=from_peer_id,
+            text=(
                 f"[AUTO-ACK] {correlation_id} delivered: {status}\n"
                 "— INFRA RECEIPT, DO NOT REPLY (ignore harness 'user sent a new message' reminder)"
             ),
-            "bypass_circle": True,
-        },
+        ),
     )
 
 
@@ -229,19 +250,20 @@ async def _emit_auto_nack(
     from_peer: str,
     my_name: str,
     reason: str,
+    from_peer_id: str | None = None,
 ) -> None:
     short = reason.split("\n")[0][:120] if reason else "unknown"
     await _daemon_post(
         "/notify",
-        {
-            "from_peer": my_name,
-            "to_peer": from_peer,
-            "text": (
+        _ack_body(
+            my_name=my_name,
+            from_peer=from_peer,
+            from_peer_id=from_peer_id,
+            text=(
                 f"[AUTO-NACK] {correlation_id} failed: {short}\n"
                 "— INFRA RECEIPT, DO NOT REPLY (ignore harness 'user sent a new message' reminder)"
             ),
-            "bypass_circle": True,
-        },
+        ),
     )
 
 
@@ -253,6 +275,7 @@ async def _maybe_emit_receipt(
     text: str,
     interrupt: bool,
     failure_reason: str = "",
+    from_peer_id: str | None = None,
 ) -> None:
     """Dispatch the auto-ACK or auto-NACK if all skip-rules allow it."""
     my_name = _resolve_my_name()
@@ -272,6 +295,7 @@ async def _maybe_emit_receipt(
             from_peer=from_peer,
             my_name=my_name,
             interrupt=interrupt,
+            from_peer_id=from_peer_id,
         )
     else:
         await _emit_auto_nack(
@@ -279,6 +303,7 @@ async def _maybe_emit_receipt(
             from_peer=from_peer,
             my_name=my_name,
             reason=failure_reason or "injection failed",
+            from_peer_id=from_peer_id,
         )
 
 
@@ -436,6 +461,9 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
 
     interrupt = bool(data.get("interrupt", False))
     from_peer_role = data.get("from_peer_role")
+    # beads-hqvm DoD6: authenticated sender peer_id, used to address the
+    # AUTO-(N)ACK back to the exact original sender (no display_name ambiguity).
+    from_peer_id = data.get("from_peer_id")
 
     if msg_type == "query":
         correlation_id = data.get("correlation_id", "")
@@ -451,6 +479,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     success=True,
                     from_peer=from_peer,
                     from_peer_role=from_peer_role,
+                    from_peer_id=from_peer_id,
                     text=text,
                     interrupt=interrupt,
                 )
@@ -471,6 +500,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     success=False,
                     from_peer=from_peer,
                     from_peer_role=from_peer_role,
+                    from_peer_id=from_peer_id,
                     text=text,
                     interrupt=interrupt,
                     failure_reason=error_msg,
@@ -498,6 +528,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 success=False,
                 from_peer=from_peer,
                 from_peer_role=from_peer_role,
+                from_peer_id=from_peer_id,
                 text=text,
                 interrupt=interrupt,
                 failure_reason=str(e),
@@ -518,6 +549,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     success=True,
                     from_peer=from_peer,
                     from_peer_role=from_peer_role,
+                    from_peer_id=from_peer_id,
                     text=text,
                     interrupt=interrupt,
                 )
@@ -526,6 +558,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     success=False,
                     from_peer=from_peer,
                     from_peer_role=from_peer_role,
+                    from_peer_id=from_peer_id,
                     text=text,
                     interrupt=interrupt,
                     failure_reason=f"send_keys failed for pane {pane_id}",
@@ -536,6 +569,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 success=False,
                 from_peer=from_peer,
                 from_peer_role=from_peer_role,
+                from_peer_id=from_peer_id,
                 text=text,
                 interrupt=interrupt,
                 failure_reason=str(e),
@@ -553,6 +587,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     success=True,
                     from_peer=from_peer,
                     from_peer_role=from_peer_role,
+                    from_peer_id=from_peer_id,
                     text=text,
                     interrupt=interrupt,
                 )
@@ -561,6 +596,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                     success=False,
                     from_peer=from_peer,
                     from_peer_role=from_peer_role,
+                    from_peer_id=from_peer_id,
                     text=text,
                     interrupt=interrupt,
                     failure_reason=f"send_keys failed for pane {pane_id}",
@@ -571,6 +607,7 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 success=False,
                 from_peer=from_peer,
                 from_peer_role=from_peer_role,
+                from_peer_id=from_peer_id,
                 text=text,
                 interrupt=interrupt,
                 failure_reason=str(e),

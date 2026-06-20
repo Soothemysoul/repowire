@@ -198,3 +198,76 @@ async def test_query_success_emits_auto_ack(
     assert len(captured_ack_posts) == 1
     body = captured_ack_posts[0]["body"]
     assert body["text"].startswith("[AUTO-ACK] notif-aaaaaaab")
+
+
+# ---------------------------------------------------------------------------
+# beads-hqvm DoD6: AUTO-ACK reverse route targets the EXACT original sender by
+# peer_id, so the receipt cannot misroute to a foreign-circle namesake.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_notify_auto_ack_uses_from_peer_id_as_to_peer_id(
+    captured_send_keys, captured_ack_posts
+):
+    """When the incoming notify carries from_peer_id, the AUTO-ACK replies to
+    that exact peer_id (to_peer_id), not just the ambiguous display_name."""
+    data = {
+        "type": "notify",
+        "from_peer": "backend-worker-claude-code",
+        "from_peer_id": "repow-project-zeon-abcd1234",
+        "text": "[#notif-deadbeef] hi",
+    }
+    await handle_message(data, "%1")
+    body = captured_ack_posts[0]["body"]
+    assert body["to_peer"] == "backend-worker-claude-code"
+    assert body["to_peer_id"] == "repow-project-zeon-abcd1234"
+
+
+@pytest.mark.asyncio
+async def test_query_auto_ack_uses_from_peer_id_as_to_peer_id(
+    captured_send_keys, captured_ack_posts
+):
+    data = {
+        "type": "query",
+        "correlation_id": "q-2",
+        "from_peer": "backend-worker-claude-code",
+        "from_peer_id": "repow-project-zeon-abcd1234",
+        "text": "[#notif-cafef00d] req",
+    }
+    with patch.object(wh, "_push_pending_cid"):
+        await handle_message(data, "%1")
+    body = captured_ack_posts[0]["body"]
+    assert body["to_peer_id"] == "repow-project-zeon-abcd1234"
+
+
+@pytest.mark.asyncio
+async def test_auto_nack_uses_from_peer_id_as_to_peer_id(
+    monkeypatch, captured_ack_posts
+):
+    monkeypatch.setattr(wh, "_tmux_send_keys", lambda pane, text, interrupt=False: False)
+    data = {
+        "type": "notify",
+        "from_peer": "backend-worker-claude-code",
+        "from_peer_id": "repow-project-zeon-abcd1234",
+        "text": "[#notif-0badf00d] boom",
+    }
+    await handle_message(data, "%1")
+    body = captured_ack_posts[0]["body"]
+    assert body["text"].startswith("[AUTO-NACK] notif-0badf00d")
+    assert body["to_peer_id"] == "repow-project-zeon-abcd1234"
+
+
+@pytest.mark.asyncio
+async def test_auto_ack_omits_to_peer_id_when_absent(
+    captured_send_keys, captured_ack_posts
+):
+    """Back-compat: no from_peer_id in the incoming message -> no to_peer_id key."""
+    data = {
+        "type": "notify",
+        "from_peer": "director-claude-code",
+        "text": "[#notif-11112222] hi",
+    }
+    await handle_message(data, "%1")
+    body = captured_ack_posts[0]["body"]
+    assert "to_peer_id" not in body

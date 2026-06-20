@@ -1043,6 +1043,7 @@ class PeerRegistry:
                 to_peer_name=peer_name,
                 text=formatted_query,
                 timeout=timeout,
+                from_peer_id=resolved_from_peer_id,
             )
 
             self._update_event(query_event_id, {"status": "success"})
