@@ -1256,6 +1256,22 @@ class PeerRegistry:
             peer.last_seen = datetime.now(timezone.utc)
             return True
 
+    async def update_description_by_id(self, peer_id: str, description: str) -> bool:
+        """Update peer's task description, resolving STRICTLY by peer_id.
+
+        Unlike update_description(), this never falls back to a display_name
+        match. peer_id is globally unique, so a name collision across circles
+        cannot cross-wire the write to a foreign-circle namesake (beads-uksi).
+        Returns True if the peer_id was found.
+        """
+        async with self._lock:
+            peer = self._peers.get(peer_id)
+            if not peer:
+                return False
+            peer.description = description
+            peer.last_seen = datetime.now(timezone.utc)
+            return True
+
     async def update_peer_role(self, identifier: str, role: PeerRole) -> bool:
         """Update peer's role out-of-band (both in-memory Peer AND mapping).
 

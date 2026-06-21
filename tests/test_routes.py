@@ -157,6 +157,35 @@ class TestPeers:
         r = await client.get(f"/peers/{name}")
         assert r.json()["description"] == "working on tests"
 
+    async def test_set_description_by_id_targets_only_that_peer(self, client):
+        """beads-uksi: POST /peers/by-id/{peer_id}/description writes to the peer
+        with that exact peer_id, never to a same-named peer in another circle."""
+        r1 = await client.post("/peers", json={
+            "name": "twin", "path": "/tmp/twin-a", "circle": "teamA", "backend": "claude-code",
+        })
+        id_a = r1.json()["peer_id"]
+        r2 = await client.post("/peers", json={
+            "name": "twin", "path": "/tmp/twin-b", "circle": "teamB", "backend": "claude-code",
+        })
+        id_b = r2.json()["peer_id"]
+        assert id_a != id_b
+
+        r = await client.post(f"/peers/by-id/{id_a}/description", json={
+            "description": "A-work",
+        })
+        assert r.status_code == 200
+
+        ra = await client.get(f"/peers/{id_a}")
+        rb = await client.get(f"/peers/{id_b}")
+        assert ra.json()["description"] == "A-work"
+        assert rb.json()["description"] == ""  # namesake NOT cross-wired
+
+    async def test_set_description_by_id_not_found(self, client):
+        r = await client.post("/peers/by-id/no-such-id/description", json={
+            "description": "x",
+        })
+        assert r.status_code == 404
+
     async def test_register_duplicate_peer(self, client):
         payload = {
             "name": "dup",

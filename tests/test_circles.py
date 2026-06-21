@@ -782,3 +782,57 @@ class TestRoleBasedCircleBypass:
         assert "sid-agent" in excluded  # sender excluded
         assert "sid-svc" not in excluded  # service peer NOT excluded
         assert "sid-other" in excluded  # different-circle agent excluded
+
+
+# ---------------------------------------------------------------------------
+# beads-uksi: set_description must resolve by unique peer_id, never cross-wire
+# the description write to a same-named peer in a different circle.
+# ---------------------------------------------------------------------------
+
+
+class TestDescriptionByIdNoCrossWire:
+    """update_description_by_id resolves STRICTLY by peer_id (no display_name
+    fallback), so a name collision across circles cannot cross-wire the write."""
+
+    @staticmethod
+    async def _register(pm: PeerRegistry, peer_id: str, name: str, circle: str) -> None:
+        peer = Peer(
+            peer_id=peer_id,
+            display_name=name,
+            path=f"/{peer_id}",
+            machine="localhost",
+            circle=circle,
+        )
+        await pm.register_peer(peer)
+
+    async def test_update_description_by_id_targets_only_that_peer(
+        self, mock_message_router):
+        """Two ONLINE peers share a display_name in different circles; updating by
+        peer_id touches ONLY the targeted peer (the beads-uksi incident #2 case)."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-abt", "backend-head", "project-agents-brain-team")
+        await self._register(pm, "sid-zeon", "backend-head", "project-zeon")
+
+        ok = await pm.update_description_by_id("sid-abt", "working on uksi")
+        assert ok is True
+
+        abt = await pm.get_peer("sid-abt")
+        zeon = await pm.get_peer("sid-zeon")
+        assert abt.description == "working on uksi"
+        assert zeon.description == ""  # NOT cross-wired into the namesake's slot
+
+    async def test_update_description_by_id_unknown_returns_false(
+        self, mock_message_router):
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-abt", "backend-head", "teamA")
+        assert await pm.update_description_by_id("no-such-id", "x") is False
+
+    async def test_update_description_by_id_does_not_fall_back_to_name(
+        self, mock_message_router):
+        """A display_name passed where a peer_id is expected must NOT resolve —
+        this strictness is the safety property that prevents cross-wiring."""
+        pm = PeerRegistry(config=Config(), message_router=mock_message_router)
+        await self._register(pm, "sid-abt", "backend-head", "teamA")
+        assert await pm.update_description_by_id("backend-head", "x") is False
+        peer = await pm.get_peer("sid-abt")
+        assert peer.description == ""

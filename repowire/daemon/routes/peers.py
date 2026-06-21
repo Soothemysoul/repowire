@@ -251,6 +251,29 @@ async def set_peer_description(
     return OkResponse()
 
 
+@router.post("/peers/by-id/{peer_id}/description", response_model=OkResponse)
+async def set_peer_description_by_id(
+    peer_id: str,
+    request: SetDescriptionRequest,
+    _: str | None = Depends(require_auth),
+) -> OkResponse:
+    """Update a peer's task description, resolving strictly by peer_id.
+
+    Mirrors GET /peers/by-pane/{pane_id}: the MCP set_description tool resolves
+    its own unique peer_id via the pane lookup and posts here, so a display_name
+    collision across circles cannot cross-wire the write to a foreign-circle
+    namesake (beads-uksi).
+    """
+    peer_registry = get_peer_registry()
+    found = await peer_registry.update_description_by_id(peer_id, request.description)
+    if not found:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Peer not found: {peer_id}",
+        )
+    return OkResponse()
+
+
 class SetRoleRequest(BaseModel):
     """Request to set peer's role out-of-band."""
 
