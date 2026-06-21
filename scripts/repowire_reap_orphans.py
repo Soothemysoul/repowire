@@ -98,16 +98,19 @@ def gather_live_panes() -> set[str]:
     return {p.strip() for p in out.splitlines() if p.strip()}
 
 
+def live_peer_ids(peers: list[dict]) -> set[str]:
+    """Live = not offline (online AND busy). busy = active session mid-task,
+    must stay guarded; online-only would collapse the AND-rule to pane-only.
+    """
+    return {p["peer_id"] for p in peers if p.get("status") != "offline"}
+
+
 def gather_live_peer_ids() -> set[str]:
     token = os.environ.get("REPOWIRE_AUTH_TOKEN")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     resp = httpx.get(f"{DAEMON_URL}/peers", headers=headers, timeout=10.0)
     resp.raise_for_status()
-    return {
-        p["peer_id"]
-        for p in resp.json()["peers"]
-        if p.get("status") == "online"
-    }
+    return live_peer_ids(resp.json()["peers"])
 
 
 def reap(orphans: list[RepowireProc], apply: bool) -> None:

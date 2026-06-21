@@ -2,6 +2,7 @@ from scripts.repowire_reap_orphans import (
     RepowireProc,
     classify_cmdline,
     find_orphans,
+    live_peer_ids,
     parse_environ,
 )
 
@@ -60,3 +61,19 @@ def test_parse_environ_missing_pane_returns_none():
     peer, pane = parse_environ(raw)
     assert peer == "repow-default"
     assert pane is None
+
+
+def test_live_peer_ids_includes_busy_excludes_offline():
+    peers = [
+        {"peer_id": "repow-online", "status": "online"},
+        {"peer_id": "repow-busy", "status": "busy"},
+        {"peer_id": "repow-offline", "status": "offline"},
+    ]
+    assert live_peer_ids(peers) == {"repow-online", "repow-busy"}
+
+
+def test_busy_peer_with_dead_pane_is_not_orphan():
+    # busy = активная сессия mid-task; в live-set → не orphan даже при мёртвой панели
+    procs = [_proc(300, "ws_hook", "repow-busy", None)]
+    orphans = find_orphans(procs, live_panes=set(), live_peer_ids={"repow-busy"})
+    assert orphans == []
