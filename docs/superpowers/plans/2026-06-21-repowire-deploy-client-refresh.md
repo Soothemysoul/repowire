@@ -495,9 +495,12 @@ REASON="deploy repowire-fork sha=${SHA}"
 PREV_VER="$(repowire --version 2>/dev/null || echo unknown)"
 log "current installed version: ${PREV_VER}"
 
-# 1) Reinstall from this checkout, pinned to uv.lock for reproducibility.
+# 1) Reinstall from this checkout. NB: `uv tool install` does NOT accept the
+#    TOML uv.lock as --constraints (uv.lock != pip constraints format; uv errors
+#    "no such comparison operator =" — verified on host, beads-n8pt). Use the
+#    canonical repo form (CLAUDE.md): full reinstall from the checkout.
 log "uv tool reinstall from ${REPO}"
-uv tool install --reinstall --constraints "${REPO}/uv.lock" "${REPO}"
+uv tool install --force --reinstall "${REPO}"
 
 # 2) Restart daemon.
 log "restart repowire.service"
