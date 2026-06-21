@@ -1,6 +1,6 @@
 import pytest
 
-from scripts.repowire_refresh_clients import build_request
+from scripts.repowire_refresh_clients import build_request, describe_response
 
 
 def test_build_request_with_token_sets_bearer():
@@ -27,3 +27,16 @@ def test_build_request_without_token_omits_auth():
 def test_build_request_rejects_bad_scope():
     with pytest.raises(ValueError):
         build_request(daemon_url="http://x", reason="r", scope="everyone", token=None)
+
+
+def test_describe_response_renders_notified_and_epoch():
+    summary = describe_response('{"notified": 3, "target_epoch": "v0.9.1+abc"}')
+    assert summary == "notified=3 target_epoch=v0.9.1+abc"
+
+
+def test_describe_response_falls_back_on_lean_body():
+    assert describe_response('{"ok": true}') == '{"ok": true}'
+
+
+def test_describe_response_falls_back_on_non_json():
+    assert describe_response("not json at all") == "not json at all"
