@@ -15,8 +15,11 @@ class AppState(Protocol):
 
     transport: Any
     query_tracker: Any
+    message_router: Any
     peer_registry: PeerRegistry
     config: Config
+    # beads-rz1g: daemon's current deployed client epoch (handshake + control).
+    refresh_epoch: str
 
 
 # Global state - initialized by lifespan

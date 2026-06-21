@@ -147,3 +147,59 @@ class TestBroadcast:
         await router.broadcast("sender", "hi")
         msg = transport.send.call_args[0][1]
         assert "from_peer_id" not in msg
+
+
+class TestBroadcastRefresh:
+    """beads-rz1g part 3: the client-refresh control frame to every live session."""
+
+    async def test_refresh_sent_to_all_sessions(self, router, transport):
+        transport.get_all_sessions.return_value = ["sid-1", "sid-2", "sid-3"]
+        sent = await router.broadcast_refresh(
+            target_epoch="0.10.0+42", reason="deploy", scope="workers"
+        )
+        assert len(sent) == 3
+        assert transport.send.call_count == 3
+
+    async def test_refresh_frame_shape(self, router, transport):
+        transport.get_all_sessions.return_value = ["sid-1"]
+        await router.broadcast_refresh(
+            target_epoch="0.10.0+42", reason="deploy uksi", scope="all"
+        )
+        msg = transport.send.call_args[0][1]
+        assert msg == {
+            "type": "refresh",
+            "target_epoch": "0.10.0+42",
+            "reason": "deploy uksi",
+            "scope": "all",
+        }
+
+    async def test_refresh_excludes(self, router, transport):
+        transport.get_all_sessions.return_value = ["sid-1", "sid-2"]
+        sent = await router.broadcast_refresh(
+            target_epoch="e", reason="r", scope="workers", exclude={"sid-2"}
+        )
+        assert sent == ["sid-1"]
+
+    async def test_refresh_partial_failure_counts_survivors(self, router, transport):
+        transport.get_all_sessions.return_value = ["sid-1", "sid-2"]
+
+        call_count = 0
+
+        async def fail_first(sid, msg):
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise TransportError("disconnected")
+
+        transport.send.side_effect = fail_first
+        sent = await router.broadcast_refresh(
+            target_epoch="e", reason="r", scope="all"
+        )
+        assert len(sent) == 1
+
+    async def test_refresh_empty_mesh(self, router, transport):
+        transport.get_all_sessions.return_value = []
+        sent = await router.broadcast_refresh(
+            target_epoch="e", reason="r", scope="all"
+        )
+        assert sent == []

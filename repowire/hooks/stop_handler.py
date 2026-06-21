@@ -4,7 +4,10 @@
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
+import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -14,12 +17,208 @@ from repowire.hooks.adapters import hook_output, normalize
 from repowire.hooks.utils import (
     daemon_post,
     get_display_name,
+    marker_dir,
     pending_cid_path,
+    read_pane_runtime_metadata,
+    resolve_agent_role,
     sweep_overdue_acks,
     tmux_send_keys,
     update_status,
 )
 from repowire.session.transcript import extract_last_turn_pair, extract_last_turn_tool_calls
+
+# --- beads-rz1g: client-refresh at the turn boundary ------------------------
+#
+# The ws-hook drops a .refresh-pending marker when it learns the installed code
+# changed (it never restarts mid-turn). The Stop hook fires BETWEEN turns, so
+# this is the safe boundary to act: a busy session has just finished its turn.
+# Orchestrators (director/pm) and scope=='advisory' are advisory (left to their
+# own restart-overlay); an in-flight beads claim defers; otherwise self-restart
+# via the existing detached `AGENT_RESTART=1 agent-stop` path, after a
+# deterministic per-session jitter to avoid a reconnect storm.
+
+_REFRESH_JITTER_WINDOW_SEC = int(os.environ.get("REPOWIRE_REFRESH_JITTER_SEC", "30"))
+# Mirror the intentional-marker freshness window: a marker older than this is a
+# leftover (deploy long past / clock skew) and is consumed without acting.
+_REFRESH_MARKER_MAX_AGE_SEC = 300
+_ORCHESTRATOR_ROLES = ("director", "pm")
+
+
+def _refresh_jitter(peer_id: str, window: int = _REFRESH_JITTER_WINDOW_SEC) -> int:
+    """Deterministic per-session jitter in ``[0, window)`` seconds before re-exec.
+
+    Spreads the simultaneous respawn of many idle sessions after a deploy so they
+    do not all reconnect to the freshly restarted daemon at once (thundering
+    herd). Deterministic (hash of peer_id) → no daemon state, fully testable.
+    """
+    if window <= 0:
+        return 0
+    return int(hashlib.sha256(peer_id.encode()).hexdigest(), 16) % window
+
+
+def _loaded_epoch_from_meta(pane_id: str | None) -> str | None:
+    """The session's loaded client epoch, as persisted by the ws-hook on connect.
+
+    Read from pane-meta (NOT recomputed from disk) so the idempotency check
+    compares against the code this session actually runs, not the on-disk version
+    a reinstall may already have bumped.
+    """
+    try:
+        return read_pane_runtime_metadata(pane_id).get("client_epoch")
+    except Exception:
+        return None
+
+
+def _read_refresh_marker(pane_id: str | None) -> dict | None:
+    """Read a FRESH .refresh-pending marker for this role, else None.
+
+    A stale marker (>_REFRESH_MARKER_MAX_AGE_SEC) is consumed and ignored. The
+    returned dict carries the parsed payload plus ``_role`` for the caller.
+    """
+    role = resolve_agent_role()
+    if not role:
+        return None
+    marker = marker_dir(role) / ".refresh-pending"
+    try:
+        age = time.time() - marker.stat().st_mtime
+    except (FileNotFoundError, OSError):
+        return None
+    if age > _REFRESH_MARKER_MAX_AGE_SEC:
+        _consume_refresh_marker(role)
+        return None
+    try:
+        data = json.loads(marker.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    data["_role"] = role
+    return data
+
+
+def _consume_refresh_marker(role: str) -> None:
+    """Remove the .refresh-pending marker (best-effort)."""
+    try:
+        (marker_dir(role) / ".refresh-pending").unlink()
+    except OSError:
+        pass
+
+
+def _should_self_restart(role: str, scope: str) -> bool:
+    """Scope/role decision (part 6).
+
+    - ``advisory`` → never (left to the role's own restart-overlay);
+    - orchestrators (director/pm) → never (always advisory, protect coordination);
+    - ``all`` → every non-orchestrator role (workers AND heads);
+    - ``workers`` → only ``*-worker`` roles.
+    """
+    if scope == "advisory":
+        return False
+    if role in _ORCHESTRATOR_ROLES:
+        return False
+    if scope == "all":
+        return True
+    if scope == "workers":
+        return role.endswith("-worker")
+    return False
+
+
+def _has_inflight_claim() -> bool:
+    """True iff this agent holds an in-progress beads claim → defer the refresh.
+
+    A multi-turn claimed task must not be interrupted by a restart; the refresh
+    is re-evaluated at every later turn boundary, so deferring is cheap. Keyed on
+    the agent's assignee (``BD_ASSIGNEE`` or display name):
+      - no identity / bd absent → False (nothing we can attribute; do not block);
+      - bd error / unparseable → True (fail-closed: never interrupt when unsure);
+      - else → True iff >=1 in-progress issue is assigned to us.
+    """
+    assignee = os.environ.get("BD_ASSIGNEE") or os.environ.get("REPOWIRE_DISPLAY_NAME")
+    if not assignee:
+        return False
+    try:
+        result = subprocess.run(
+            ["bd", "list", "--status=in_progress", "--assignee", assignee, "--json"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return False
+    if result.returncode != 0:
+        return True
+    try:
+        issues = json.loads(result.stdout or "[]")
+    except json.JSONDecodeError:
+        return True
+    if isinstance(issues, dict):
+        issues = issues.get("issues", [])
+    return bool(issues)
+
+
+def _trigger_refresh_restart(pane_id: str | None) -> None:
+    """Self-restart at THIS safe turn boundary to load fresh client code.
+
+    Mirrors the director self-restart path (ops config_fingerprint_check.py): a
+    detached ``AGENT_RESTART=1 agent-stop "$SCOPE_NAME"`` — Gate 0 writes
+    ``.restart-intentional`` so the agent-gateway respawns the session instead of
+    treating the scope death as a crash, and the respawn re-injects the role's
+    context. A per-session jitter precedes it. Degrades to a no-op without the
+    ops scope env (standalone install). NEVER kills mid-turn — the Stop hook
+    fires only between turns, so a busy session has already finished its turn.
+    """
+    scope_name = os.environ.get("SCOPE_NAME")
+    if not scope_name:
+        return
+    peer_id = (
+        os.environ.get("REPOWIRE_PEER_ID")
+        or os.environ.get("REPOWIRE_DISPLAY_NAME")
+        or scope_name
+    )
+    jitter = _refresh_jitter(peer_id)
+    try:
+        subprocess.Popen(
+            [
+                "setsid",
+                "bash",
+                "-c",
+                f'sleep {jitter} && AGENT_RESTART=1 agent-stop "$SCOPE_NAME"',
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        pass
+
+
+def _maybe_trigger_refresh(pane_id: str | None) -> None:
+    """Act on a .refresh-pending marker at the turn boundary (parts 5/6/7)."""
+    data = _read_refresh_marker(pane_id)
+    if data is None:
+        return
+    role = data["_role"]
+    target_epoch = data.get("target_epoch", "")
+    scope = data.get("scope", "workers")
+
+    # Idempotency: a session already at target_epoch consumes the marker, no-op.
+    loaded = _loaded_epoch_from_meta(pane_id)
+    if target_epoch and loaded and target_epoch == loaded:
+        _consume_refresh_marker(role)
+        return
+
+    # Scope/role: advisory roles never auto-restart — leave the marker for their
+    # own restart-overlay (it self-GCs once stale).
+    if not _should_self_restart(role, scope):
+        return
+
+    # Guard: never interrupt a multi-turn claimed task. Defer (leave the marker).
+    if _has_inflight_claim():
+        return
+
+    _consume_refresh_marker(role)
+    _trigger_refresh_restart(pane_id)
 
 
 def _pop_pending_cid(pane_id: str) -> str | None:
@@ -146,6 +345,11 @@ def main(backend: str = "claude-code") -> int:
     # turn boundary, in case the ws-hook watchdog process is down.
     if pane_id:
         _sweep_overdue_acks(pane_id)
+
+    # beads-rz1g: client-refresh — at this safe turn boundary, act on any
+    # .refresh-pending marker the ws-hook dropped (self-restart to load fresh
+    # code, with idempotency / advisory / in-flight-claim guards + jitter).
+    _maybe_trigger_refresh(pane_id)
 
     hook_output(backend)
     return 0

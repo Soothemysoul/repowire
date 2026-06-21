@@ -17,6 +17,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from repowire import __version__
+from repowire.client_epoch import compute_client_epoch
 from repowire.config.models import Config, load_config
 from repowire.daemon.auth import require_localhost
 from repowire.daemon.deps import cleanup_deps, init_deps
@@ -27,6 +28,7 @@ from repowire.daemon.query_tracker import QueryTracker
 from repowire.daemon.relay_client import RelayClient
 from repowire.daemon.routes import (
     attachments,
+    control,
     health,
     lifecycle,
     messages,
@@ -97,6 +99,10 @@ def create_app(
         app.state.message_router = message_router
         app.state.peer_registry = peer_registry
         app.state.relay_mode = cfg.relay.enabled
+        # beads-rz1g: the daemon's own deployed epoch, computed once at startup.
+        # A freshly (re)started daemon is the authority on the deployed version;
+        # the WS handshake and POST /control/refresh-clients hand this to peers.
+        app.state.refresh_epoch = compute_client_epoch()
 
         lifecycle_handler = LifecycleHandler(
             peer_registry=peer_registry,
@@ -229,6 +235,7 @@ def create_app(
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)
     app.include_router(lifecycle.router)
+    app.include_router(control.router)
 
     # --- Static File Serving (Dashboard) ---
     web_out = _find_web_output_dir()
@@ -328,6 +335,7 @@ def create_test_app(
         app.state.message_router = msg_router
         app.state.peer_registry = registry
         app.state.relay_mode = cfg.relay.enabled
+        app.state.refresh_epoch = compute_client_epoch()
 
         lh = LifecycleHandler(
             peer_registry=registry,
@@ -356,6 +364,7 @@ def create_test_app(
     app.include_router(spawn_routes.router)
     app.include_router(attachments.router)
     app.include_router(lifecycle.router)
+    app.include_router(control.router)
 
     return app
 

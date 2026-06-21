@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
+from repowire.client_epoch import compute_client_epoch
 from repowire.config.models import AgentType
 from repowire.daemon.deps import get_app_state
 from repowire.daemon.routes._shared import is_valid_identifier
@@ -168,11 +169,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         # Register with transport (handles connection + status tracking)
         await transport.connect(session_id, websocket)
 
-        # Send connect response with daemon-assigned name
+        # Send connect response with daemon-assigned name. ``refresh_epoch``
+        # (beads-rz1g) is the daemon's current deployed epoch — a session whose
+        # loaded epoch differs is stale and refreshes; handing it on the
+        # handshake closes the reconnect-after-restart race (a session that
+        # reconnects after the refresh broadcast already went out still learns
+        # it is stale).
+        refresh_epoch = getattr(state, "refresh_epoch", None) or compute_client_epoch()
         await websocket.send_json({
             "type": "connected",
             "session_id": session_id,
             "display_name": assigned_name,
+            "refresh_epoch": refresh_epoch,
         })
         logger.info(f"WebSocket connected: {assigned_name}@{circle} ({session_id}, {backend})")
 

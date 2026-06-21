@@ -190,3 +190,58 @@ class MessageRouter:
 
         logger.info(f"Broadcast from {from_peer}: sent to {len(sent_to)} peers")
         return sent_to
+
+    async def broadcast_refresh(
+        self,
+        *,
+        target_epoch: str,
+        reason: str,
+        scope: str,
+        exclude: set[str] | None = None,
+    ) -> list[str]:
+        """Push a client-refresh control frame to every live session (beads-rz1g).
+
+        Unlike :meth:`broadcast`, this is a daemon-originated control message
+        (``type=="refresh"``) delivered to ALL connected sessions regardless of
+        circle — a deploy-time signal, not peer-to-peer chat. The receiving
+        ws-hook writes a ``.refresh-pending`` marker (never restarts mid-turn);
+        the stop-hook performs the actual self-restart at a safe turn boundary.
+
+        Args:
+            target_epoch: the deployed epoch sessions should converge to. A
+                session whose loaded epoch differs is stale and refreshes.
+            reason: human-readable trigger (echoed into the marker, surfaced in
+                the resumption context).
+            scope: ``workers`` | ``all`` | ``advisory`` — the client decides what
+                to do with it based on its own role (orchestrators are always
+                advisory; see stop-hook).
+            exclude: session IDs to skip.
+
+        Returns:
+            List of session IDs the refresh frame reached.
+        """
+        excluded = exclude or set()
+        message: dict[str, Any] = {
+            "type": "refresh",
+            "target_epoch": target_epoch,
+            "reason": reason,
+            "scope": scope,
+        }
+
+        async def _send_one(session_id: str) -> str | None:
+            try:
+                await self._transport.send(session_id, message)
+                return session_id
+            except TransportError as e:
+                logger.warning(f"Refresh to {session_id} failed: {e}")
+                return None
+
+        results = await asyncio.gather(
+            *(_send_one(sid) for sid in self._transport.get_all_sessions() if sid not in excluded),
+        )
+        sent_to = [r for r in results if r is not None]
+        logger.info(
+            f"Refresh broadcast (epoch={target_epoch}, scope={scope}): "
+            f"sent to {len(sent_to)} sessions"
+        )
+        return sent_to
