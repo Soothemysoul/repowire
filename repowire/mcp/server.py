@@ -424,16 +424,26 @@ def create_mcp_server() -> FastMCP:
             Confirmation message
         """
         await _ensure_registered()
-        pane_id = get_pane_id()
-        name = ""
-        if pane_id:
-            try:
-                result = await daemon_request("GET", f"/peers/by-pane/{quote(pane_id, safe='')}")
-                name = result.get("display_name") or result.get("name", "")
-            except Exception as e:
-                logger.warning("Could not get peer name by pane_id '%s': %s", pane_id, e)
-        if not name:
-            name = await _get_my_peer_name()
+        # Resolve our own unique peer_id and write via the by-id route, so a
+        # display_name collision across circles cannot cross-wire the write to a
+        # foreign-circle namesake (beads-uksi, mirrors the hqvm authenticated
+        # from_peer_id pattern).
+        peer_id = await _get_my_peer_id()
+        if peer_id:
+            await daemon_request(
+                "POST",
+                f"/peers/by-id/{quote(peer_id, safe='')}/description",
+                {"description": description},
+            )
+            return f"description updated: {description}"
+        # Fallback: peer_id unresolved (e.g. no tmux pane). Name-based resolve is
+        # collision-prone across circles, hence the warning.
+        name = await _get_my_peer_name()
+        logger.warning(
+            "set_description: peer_id unresolved, falling back to name-based resolve "
+            "(name='%s') — may be ambiguous under cross-circle display_name collision",
+            name,
+        )
         await daemon_request("POST", f"/peers/{name}/description", {"description": description})
         return f"description updated: {description}"
 

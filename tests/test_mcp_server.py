@@ -133,6 +133,46 @@ async def test_get_my_peer_id_returns_none_when_no_pane(monkeypatch):
     assert await mcp_server._get_my_peer_id() is None
 
 
+# ---------------------------------------------------------------------------
+# beads-uksi: set_description must resolve by the authenticated peer_id and POST
+# to the by-id route, so a display_name collision across circles cannot
+# cross-wire the description write to a foreign-circle namesake.
+# ---------------------------------------------------------------------------
+
+
+async def test_set_description_uses_peer_id_route(daemon_calls):
+    mcp = mcp_server.create_mcp_server()
+    await mcp.call_tool("set_description", {"description": "on uksi"})
+
+    body = _body_for(daemon_calls, f"/peers/by-id/{MY_PEER_ID}/description")
+    assert body["description"] == "on uksi"
+    # The collision-prone name-based route must NOT be used when peer_id is known.
+    posted = [p for (m, p, _b) in daemon_calls if m == "POST"]
+    assert f"/peers/{MY_NAME}/description" not in posted
+
+
+async def test_set_description_falls_back_to_name_when_peer_id_unresolved(monkeypatch):
+    """No pane -> peer_id unresolved -> legacy name-based route (with warning)."""
+    calls: list[tuple[str, str, dict | None]] = []
+
+    async def fake_daemon_request(method, path, body=None):
+        calls.append((method, path, body))
+        return {}
+
+    monkeypatch.setattr(mcp_server, "_cached_peer_name", "fallback-name")
+    monkeypatch.setattr(mcp_server, "_cached_peer_id", None, raising=False)
+    monkeypatch.setattr(mcp_server, "_registered", True)
+    monkeypatch.setattr(mcp_server, "daemon_request", fake_daemon_request)
+    monkeypatch.setattr(mcp_server, "get_pane_id", lambda: None)
+
+    mcp = mcp_server.create_mcp_server()
+    await mcp.call_tool("set_description", {"description": "x"})
+
+    posted = [p for (m, p, _b) in calls if m == "POST"]
+    assert "/peers/fallback-name/description" in posted
+    assert not any(p.startswith("/peers/by-id/") for p in posted)
+
+
 async def test_get_my_peer_id_uses_cached_id_without_requery(monkeypatch):
     monkeypatch.setattr(mcp_server, "_cached_peer_id", "repow-cached-0001", raising=False)
 
