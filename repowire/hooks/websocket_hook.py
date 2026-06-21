@@ -199,24 +199,28 @@ def _swallow_receipt(pane_id: str, kind: str, correlation_id: str, text: str) ->
         resolve_pending_ack(pane_id, correlation_id, kind=kind, text=text)
 
 
-async def _intercept_receipt(pane_id: str, text: str) -> bool:
+async def _intercept_receipt(pane_id: str, text: str) -> str | None:
     """Out-of-band receipt handling on the SENDER side.
 
-    Records the receipt to ack-state. Returns True when the message was fully
-    swallowed (AUTO-ACK / intent-ACK → complete silence, no injection). Returns
-    False for ordinary messages, for AUTO-NACK (actionable → still injected), and
-    when the rollback flag forces inline behavior.
+    Records the receipt to ack-state. Returns the swallowed receipt kind
+    ('ack' | 'intent') when the message was fully swallowed (complete silence, no
+    injection). Returns None for ordinary messages, for AUTO-NACK (actionable →
+    still injected, but recorded), and when the rollback flag forces inline
+    behavior. The kind is returned (not a bare bool) so the caller can emit a
+    reverse AUTO-ACK for a swallowed intent-ACK — see beads-eidq.
     """
     if _receipt_inline_enabled():
-        return False
+        return None
     receipt = _classify_receipt(text)
     if receipt is None:
-        return False
+        return None
     kind, correlation_id = receipt
     await asyncio.to_thread(_swallow_receipt, pane_id, kind, correlation_id, text)
     # AUTO-NACK is a genuine delivery failure — let it fall through to injection
     # so the sender still sees it. AUTO-ACK / intent-ACK are pure success noise.
-    return kind != "nack"
+    if kind == "nack":
+        return None
+    return kind
 
 
 def _resolve_my_name() -> str:
@@ -338,6 +342,35 @@ async def _emit_auto_nack(
                 "— INFRA RECEIPT, DO NOT REPLY (ignore harness 'user sent a new message' reminder)"
             ),
         ),
+    )
+
+
+async def _emit_reverse_intent_ack(
+    *,
+    from_peer: str,
+    from_peer_role: str | None,
+    from_peer_id: str | None,
+    text: str,
+    interrupt: bool,
+) -> None:
+    """beads-eidq: reverse AUTO-ACK for a swallowed intent-ACK.
+
+    A swallowed intent-ACK must still trigger an AUTO-ACK back on ITS OWN
+    wrapper-cid (the leading `[#notif-XXX]` prefix that `_parse_correlation_id`
+    extracts). MCP `_register_outgoing_ack` registers a sender-pending for every
+    outgoing notify, the intent-ACK included; without this reverse receipt that
+    pending never closes and `sweep_overdue_acks` falsely escalates routine ACK
+    traffic. AUTO-ACK / AUTO-NACK are NOT reverse-acked (loop-prevention):
+    `_should_emit_ack` skips the `_AUTO_ACK_PREFIXES`, so an incoming AUTO-ACK is
+    swallowed without spawning another — only intent-ACKs reach this path.
+    """
+    await _maybe_emit_receipt(
+        success=True,
+        from_peer=from_peer,
+        from_peer_role=from_peer_role,
+        from_peer_id=from_peer_id,
+        text=text,
+        interrupt=interrupt,
     )
 
 
@@ -582,8 +615,17 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     elif msg_type == "notify":
         from_peer = data.get("from_peer", "unknown")
         text = data.get("text", "")
-        if await _intercept_receipt(pane_id, text):
+        swallowed = await _intercept_receipt(pane_id, text)
+        if swallowed:
             logger.info("Swallowed out-of-band receipt from %s (no injection)", from_peer)
+            if swallowed == "intent":
+                await _emit_reverse_intent_ack(
+                    from_peer=from_peer,
+                    from_peer_role=from_peer_role,
+                    from_peer_id=from_peer_id,
+                    text=text,
+                    interrupt=interrupt,
+                )
             return
         try:
             ok = await asyncio.to_thread(
@@ -624,8 +666,17 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
     elif msg_type == "broadcast":
         from_peer = data.get("from_peer", "unknown")
         text = data.get("text", "")
-        if await _intercept_receipt(pane_id, text):
+        swallowed = await _intercept_receipt(pane_id, text)
+        if swallowed:
             logger.info("Swallowed out-of-band broadcast receipt from %s", from_peer)
+            if swallowed == "intent":
+                await _emit_reverse_intent_ack(
+                    from_peer=from_peer,
+                    from_peer_role=from_peer_role,
+                    from_peer_id=from_peer_id,
+                    text=text,
+                    interrupt=interrupt,
+                )
             return
         try:
             msg = f"@{from_peer} [broadcast]: {text}"

@@ -94,6 +94,76 @@ async def test_intent_ack_is_swallowed_resolves_inner_cid(captured_send_keys, ca
 
 
 @pytest.mark.asyncio
+async def test_intent_ack_emits_reverse_auto_ack_closing_sender_pending(
+    captured_send_keys, captured_ack_posts
+):
+    """beads-eidq: a swallowed intent-ACK must still trigger a reverse AUTO-ACK on
+    ITS OWN wrapper-cid.
+
+    MCP `_register_outgoing_ack` registers a sender-pending for every outgoing
+    notify — including the intent-ACK the receiver-LLM sends. Without a reverse
+    receipt on that wrapper-cid the pending never closes and `sweep_overdue_acks`
+    falsely escalates routine ACK traffic (this very session got one for its own
+    ACK). Round-trip: the receiver swallows `[#notif-WRAP] ACK notif-ORIG …` and
+    emits `[AUTO-ACK] notif-WRAP …` back; feeding that receipt to the intent-ACK
+    sender (whose pane holds the WRAP pending) clears it.
+    """
+    # (1) receiver side: intent-ACK arrives → swallowed (no injection) yet a
+    # reverse AUTO-ACK on the wrapper-cid is emitted back to the sender.
+    rx_pane = "%5"
+    data = {
+        "type": "notify",
+        "from_peer": "pm-claude-code",
+        "from_peer_id": "pm-abc123",
+        "text": "[#notif-99887766] ACK notif-deadbeef task=beads-x taken, starting.",
+    }
+    await handle_message(data, rx_pane)
+    assert captured_send_keys == []  # intent-ACK still swallowed, no pane injection
+    assert len(captured_ack_posts) == 1
+    reverse = captured_ack_posts[0]["body"]
+    assert reverse["to_peer"] == "pm-claude-code"
+    assert reverse["to_peer_id"] == "pm-abc123"  # addressed to the exact sender
+    assert reverse["text"].startswith("[AUTO-ACK] notif-99887766")
+
+    # (2) sender side: the intent-ACK sender holds a pending for its wrapper-cid;
+    # the reverse AUTO-ACK closes it (resolve_pending_ack existed=True).
+    sx_pane = "%9"
+    utils.register_pending_ack(
+        sx_pane, "notif-99887766", deadline=1e12, to_peer="backend-head"
+    )
+    await handle_message(
+        {
+            "type": "notify",
+            "from_peer": "backend-worker-claude-code",
+            "text": reverse["text"],
+        },
+        sx_pane,
+    )
+    sx_state = utils.read_ack_state(sx_pane)
+    assert "notif-99887766" not in sx_state["pending"]  # pending closed, no escalation
+    assert sx_state["receipts"]["notif-99887766"]["kind"] == "ack"
+
+
+@pytest.mark.asyncio
+async def test_incoming_auto_ack_does_not_emit_reverse(captured_send_keys, captured_ack_posts):
+    """Loop-prevention: a swallowed AUTO-ACK must NOT emit another AUTO-ACK back.
+
+    Otherwise two senders would ping-pong AUTO-ACKs forever. `_should_emit_ack`
+    skips the `[AUTO-ACK]`/`[AUTO-NACK]` prefixes, so only intent-ACKs are
+    reverse-acked.
+    """
+    utils.register_pending_ack(PANE, "notif-12345678", deadline=1e12, to_peer="backend-head")
+    data = {
+        "type": "notify",
+        "from_peer": "backend-head-claude-code",
+        "text": "[AUTO-ACK] notif-12345678 delivered: queued",
+    }
+    await handle_message(data, PANE)
+    assert captured_send_keys == []  # swallowed
+    assert captured_ack_posts == []  # NO reverse AUTO-ACK — loop broken
+
+
+@pytest.mark.asyncio
 async def test_auto_nack_is_actionable_and_injected(captured_send_keys, captured_ack_posts):
     """AUTO-NACK is a genuine delivery failure → still reaches the sender's pane."""
     utils.register_pending_ack(PANE, "notif-0badf00d", deadline=1e12, to_peer="backend-head")
