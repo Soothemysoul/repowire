@@ -22,14 +22,14 @@ def test_hook_with_dead_pane_and_dead_peer_is_orphan():
     assert [o.pid for o in orphans] == [1395918]
 
 
-def test_pane_alive_but_peer_dead_is_NOT_orphan_conservative():
+def test_pane_alive_but_peer_dead_is_not_orphan_conservative():
     # И-условие: пока панель жива — не трогаем, даже если peer не в реестре
     procs = [_proc(200, "mcp", "repow-y", "%5")]
     orphans = find_orphans(procs, live_panes={"%5"}, live_peer_ids=set())
     assert orphans == []
 
 
-def test_peer_alive_but_pane_dead_is_NOT_orphan_conservative():
+def test_peer_alive_but_pane_dead_is_not_orphan_conservative():
     procs = [_proc(201, "mcp", "repow-z", "%999")]
     orphans = find_orphans(procs, live_panes=set(), live_peer_ids={"repow-z"})
     assert orphans == []

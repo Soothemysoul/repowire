@@ -13,7 +13,8 @@ def test_build_request_with_token_sets_bearer():
     assert method == "POST"
     assert url == "http://127.0.0.1:8377/control/refresh-clients"
     assert headers["Authorization"] == "Bearer secret"
-    assert body == {"reason": "deploy sha=abc", "scope": "workers"}  # no target_epoch (daemon-derived)
+    # no target_epoch — daemon-derived post-restart
+    assert body == {"reason": "deploy sha=abc", "scope": "workers"}
 
 
 def test_build_request_without_token_omits_auth():
