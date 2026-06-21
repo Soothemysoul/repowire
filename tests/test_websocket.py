@@ -76,6 +76,51 @@ class TestWebSocketConnect:
 
         cleanup_deps()
 
+    async def test_handshake_carries_refresh_epoch(self, tmp_path):
+        """beads-rz1g part 3: the connected handshake echoes the daemon's current
+        refresh epoch, so a session reconnecting after a daemon restart learns it
+        is stale even if the broadcast went out before it reconnected."""
+        from repowire.client_epoch import compute_client_epoch
+
+        app = _make_app(tmp_path)
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client, aconnect_ws("/ws", client) as ws:
+            await ws.send_json({
+                "type": "connect",
+                "display_name": "epochpeer",
+                "circle": "default",
+                "backend": "claude-code",
+                "path": "/tmp/test",
+            })
+            resp = json.loads(await ws.receive_text())
+            assert resp["type"] == "connected"
+            # absent explicit state → daemon computes its own deployed epoch
+            assert resp["refresh_epoch"] == compute_client_epoch()
+
+        cleanup_deps()
+
+    async def test_handshake_echoes_explicit_refresh_epoch(self, tmp_path):
+        """When the daemon already holds a pushed epoch, the handshake echoes it."""
+        app = _make_app(tmp_path)
+        from repowire.daemon.deps import get_app_state
+
+        get_app_state().refresh_epoch = "pushed-epoch-7"
+        async with AsyncClient(
+            transport=ASGIWebSocketTransport(app), base_url="http://test"
+        ) as client, aconnect_ws("/ws", client) as ws:
+            await ws.send_json({
+                "type": "connect",
+                "display_name": "epochpeer2",
+                "circle": "default",
+                "backend": "claude-code",
+                "path": "/tmp/test",
+            })
+            resp = json.loads(await ws.receive_text())
+            assert resp["refresh_epoch"] == "pushed-epoch-7"
+
+        cleanup_deps()
+
     async def test_connect_requires_display_name(self, tmp_path):
         app = _make_app(tmp_path)
         async with AsyncClient(

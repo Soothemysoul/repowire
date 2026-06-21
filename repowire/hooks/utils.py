@@ -55,6 +55,28 @@ def pane_logs_dir() -> Path:
     return path
 
 
+def marker_dir(role: str) -> Path:
+    """Per-role intentional-marker directory: ``$HOME/ai-infra/ops/<role>/``.
+
+    Home of ``.shutdown-intentional`` / ``.restart-intentional`` /
+    ``.refresh-pending`` (beads-rz1g) — the signals the agent-gateway and the
+    hooks coordinate restarts through. Shared so the stop-hook and the ws-hook
+    agree on the path without the stop-hook importing the websockets-dependent
+    ws-hook module.
+    """
+    return Path(os.path.expanduser("~")) / "ai-infra" / "ops" / role
+
+
+def resolve_agent_role() -> str | None:
+    """Role-dir name for the marker path, from ``BRAIN_AGENT_ROLE`` (spawn-claude).
+
+    Returns None when absent → marker logic degrades to a no-op (standalone
+    install without the brain ops layer). NOTE: ``REPOWIRE_PEER_ROLE`` is the
+    mesh role (agent/orchestrator), NOT the role-dir — do not use it here.
+    """
+    return os.environ.get("BRAIN_AGENT_ROLE") or None
+
+
 def ws_hook_lock_path(pane_id: str | None) -> Path:
     """Lock file guarding the single ws-hook owner for a pane."""
     return pane_logs_dir() / f"ws-hook-{get_pane_file(pane_id)}.lock"

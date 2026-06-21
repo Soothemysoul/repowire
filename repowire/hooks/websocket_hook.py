@@ -28,6 +28,7 @@ except ImportError as e:
     print("Install with: pip install websockets", file=sys.stderr)
     sys.exit(1)
 
+from repowire.client_epoch import compute_client_epoch
 from repowire.config.models import AgentType
 from repowire.hooks._identity import resolve_agent_path
 from repowire.hooks._tmux import get_tmux_info, normalize_circle
@@ -108,6 +109,71 @@ def _marker_present(role: str | None) -> bool:
         if age <= _INTENTIONAL_MARKER_MAX_AGE_SEC:
             return True
     return False
+
+
+# --- beads-rz1g: client-refresh marker ------------------------------------
+#
+# The ws-hook loaded the installed package once at spawn. After a reinstall +
+# daemon restart, this running process still executes the OLD in-memory client
+# code. We detect that via the epoch (see repowire.client_epoch) and react by
+# dropping a .refresh-pending marker — NEVER restarting here (that would be
+# mid-turn). The stop-hook consumes the marker at a safe turn boundary.
+
+# Captured once at this process's startup (in main), then cached. NOT recomputed
+# from disk later — a reinstall must not retroactively change what a running
+# process reports as its loaded code version.
+_loaded_client_epoch: str | None = None
+
+
+def _get_loaded_epoch() -> str:
+    """The client epoch captured at THIS hook process's startup (cached)."""
+    global _loaded_client_epoch
+    if _loaded_client_epoch is None:
+        _loaded_client_epoch = compute_client_epoch()
+    return _loaded_client_epoch
+
+
+def _write_refresh_pending(role: str, *, target_epoch: str, reason: str, scope: str) -> None:
+    """Atomically drop a ``.refresh-pending`` marker for ``role``.
+
+    Lands next to the other intentional markers ($HOME/ai-infra/ops/<role>/),
+    reusing the existing marker machinery. tmp→rename so the stop-hook never
+    reads a half-written marker. Best-effort: I/O errors are swallowed (a missed
+    refresh self-heals on the next signal or the handshake of the next reconnect).
+    """
+    base = _marker_dir(role)
+    try:
+        base.mkdir(parents=True, exist_ok=True)
+        marker = base / ".refresh-pending"
+        tmp = base / ".refresh-pending.tmp"
+        payload = json.dumps(
+            {"target_epoch": target_epoch, "reason": reason, "scope": scope}
+        )
+        tmp.write_text(payload)
+        os.replace(tmp, marker)
+    except OSError as e:  # pragma: no cover — best-effort marker write
+        logger.debug("refresh-pending write failed: %s", e)
+
+
+def _handle_refresh_signal(target_epoch: str, reason: str, scope: str) -> bool:
+    """React to a refresh signal (WS ``refresh`` message OR a stale handshake).
+
+    Idempotent: a session already at ``target_epoch`` is a no-op. Never restarts
+    here — only writes the marker the stop-hook consumes at a safe boundary.
+    Degrades to no-op when the role-dir is unknown (standalone install without
+    the brain ops layer). Returns True iff a marker was written.
+    """
+    if target_epoch and target_epoch == _get_loaded_epoch():
+        return False
+    role = _resolve_agent_role()
+    if not role:
+        return False
+    _write_refresh_pending(role, target_epoch=target_epoch, reason=reason, scope=scope)
+    logger.info(
+        "refresh-pending marked (target=%s scope=%s reason=%s)",
+        target_epoch, scope, reason,
+    )
+    return True
 
 
 # Surface the WS-lost warning only after the disconnect persists, so a
@@ -713,6 +779,17 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 failure_reason=str(e),
             )
 
+    elif msg_type == "refresh":
+        # beads-rz1g: a deploy-time client-refresh signal. NOT a pane injection
+        # (so it skips the pane-safety gate above) — we only write a marker the
+        # stop-hook acts on at the next safe turn boundary.
+        await asyncio.to_thread(
+            _handle_refresh_signal,
+            data.get("target_epoch", ""),
+            data.get("reason", ""),
+            data.get("scope", "workers"),
+        )
+
     elif msg_type == "ping":
         pane_alive = await asyncio.to_thread(_is_pane_safe, pane_id)
         if websocket:
@@ -760,6 +837,11 @@ async def main() -> int:
     # Snapshot pane command at startup to detect pane reuse
     global _expected_command
     _expected_command = _get_pane_command(pane_id)
+
+    # beads-rz1g: capture the loaded client epoch NOW, at startup, while the
+    # on-disk files still match the code this process imported. Caching it here
+    # guarantees a later reinstall cannot retroactively mutate our loaded epoch.
+    _get_loaded_epoch()
 
     daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
     daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")
@@ -842,8 +924,25 @@ async def _reconnect_loop(
                         "cwd": path,
                         "display_name": response.get("display_name", display_name),
                         "peer_id": session_id,
+                        # beads-rz1g: persist OUR loaded epoch so the stop-hook
+                        # compares against what this session actually runs, not
+                        # the (possibly newer) on-disk version.
+                        "client_epoch": _get_loaded_epoch(),
                     })
                     write_pane_runtime_metadata(pane_id, metadata)
+
+                    # beads-rz1g: the handshake carries the daemon's current
+                    # deployed epoch. If we are stale (loaded != handshake), mark
+                    # a refresh — this closes the race where the daemon broadcast
+                    # went out before we reconnected after a daemon restart.
+                    handshake_epoch = response.get("refresh_epoch")
+                    if handshake_epoch:
+                        await asyncio.to_thread(
+                            _handle_refresh_signal,
+                            handshake_epoch,
+                            "reconnect-handshake",
+                            "all",
+                        )
                 else:
                     logger.error(f"Unexpected response: {response}, retrying...")
                     await asyncio.sleep(2)
