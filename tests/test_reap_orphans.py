@@ -1,4 +1,9 @@
-from scripts.repowire_reap_orphans import RepowireProc, find_orphans
+from scripts.repowire_reap_orphans import (
+    RepowireProc,
+    classify_cmdline,
+    find_orphans,
+    parse_environ,
+)
 
 
 def _proc(pid, kind, peer_id, pane):
@@ -34,3 +39,24 @@ def test_proc_without_peer_id_is_skipped():
     procs = [_proc(202, "ws_hook", None, None)]
     orphans = find_orphans(procs, live_panes=set(), live_peer_ids=set())
     assert orphans == []
+
+
+def test_classify_cmdline_distinguishes_kinds():
+    assert classify_cmdline("/.../repowire/hooks/websocket_hook.py") == "ws_hook"
+    assert classify_cmdline("/.../python /.../repowire mcp") == "mcp"
+    assert classify_cmdline("/.../repowire serve") is None       # daemon — НЕ трогать
+    assert classify_cmdline("python3 -m graphify.serve /...") is None  # чужой
+
+
+def test_parse_environ_extracts_peer_and_pane():
+    raw = "REPOWIRE_PEER_ID=repow-x\x00REPOWIRE_TMUX_PANE=%328\x00FOO=bar\x00"
+    peer, pane = parse_environ(raw)
+    assert peer == "repow-x"
+    assert pane == "%328"
+
+
+def test_parse_environ_missing_pane_returns_none():
+    raw = "REPOWIRE_PEER_ID=repow-default\x00REPOWIRE_DISPLAY_NAME=my-pro\x00"
+    peer, pane = parse_environ(raw)
+    assert peer == "repow-default"
+    assert pane is None
