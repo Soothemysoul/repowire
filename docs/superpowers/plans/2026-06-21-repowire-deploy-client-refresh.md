@@ -32,7 +32,7 @@ curl -sS -X POST "http://127.0.0.1:8377/control/refresh-clients" \
   -d '{"reason":"deploy <sha>","scope":"workers"}'
 ```
 
-**Pending (не блокирует):** финальная форма JSON-ответа endpoint'а (счётчик уведомлённых сессий и т.п.) — backend-head даст, когда worker закоммитит rz1g. Наш хелпер сейчас лишь проверяет `200` (`raise_for_status`); парсинг тела добавим, если понадобится, после rz1g.
+**RESOLVED (rz1g смержен, PR #37, sha 075d670 на origin/main):** endpoint реальный — `repowire/daemon/routes/control.py`, под `require_localhost + require_auth`. **Ответ: `{notified: int, target_epoch: str}`** (`notified` = число уведомлённых сессий). target_epoch daemon-derived через `compute_client_epoch` (`repowire/client_epoch.py`, version+mtime_ns). Хелпер `raise_for_status` (200) достаточен; рекомендуется дополнительно логировать `notified` из тела для операционной видимости деплоя. Ветка n8pt должна быть rebase'нута на origin/main (075d670), чтобы deploy-скрипт лежал рядом с реальным endpoint и PR мержился чисто.
 
 ---
 
