@@ -48,7 +48,7 @@ Process landscape (`ps`, parent PID `1729` = tmux server):
 - Live WS-хук: `REPOWIRE_PEER_ID=repow-project-agents-brain-team-f98bc9e6`, `REPOWIRE_TMUX_PANE=%328`, `TMUX=/tmp/tmux-.../workspace,...`, `REPOWIRE_CIRCLE=...`.
 - **Orphan** (PID 1395918): `REPOWIRE_PEER_ID=repow-default-2bb40e47`, `REPOWIRE_DISPLAY_NAME=my-pro-claude-code`, **нет** `REPOWIRE_TMUX_PANE`, **нет** `TMUX` → панель мертва, circle `default` (старая сессия).
 
-**Orphan-критерий (консервативный, И-условие):** процесс считается orphan **только если** (a) cmdline матчит `websocket_hook.py` ИЛИ ` repowire mcp` (не daemon, не graphify), И (b) у него есть `REPOWIRE_PEER_ID` (иначе не наш — skip), И (c) его `REPOWIRE_TMUX_PANE` отсутствует ИЛИ его нет в live-pane set от `tmux list-panes`, И (d) его `REPOWIRE_PEER_ID` отсутствует в live-peer set (status online) от `GET /peers`. Любая неопределённость → НЕ убивать.
+**Orphan-критерий (консервативный, И-условие):** процесс считается orphan **только если** (a) cmdline матчит `websocket_hook.py` ИЛИ ` repowire mcp` (не daemon, не graphify), И (b) у него есть `REPOWIRE_PEER_ID` (иначе не наш — skip), И (c) его `REPOWIRE_TMUX_PANE` отсутствует ИЛИ его нет в live-pane set от `tmux list-panes`, И (d) его `REPOWIRE_PEER_ID` отсутствует в live-peer set от `GET /peers`, где live = `status != "offline"` (online **И** busy — busy-сессия = активный worker/head, обязана оставаться защищённой peer-guard'ом; фильтр только-online схлопнул бы AND-rule в pane-guard на активных сессиях — pre-merge фикс director'а notif-16864e75). Любая неопределённость → НЕ убивать.
 
 tmux socket: `workspace` (`REPOWIRE_TMUX_SOCKET=workspace` в unit). Команда: `tmux -L workspace list-panes -a -F '#{pane_id}'`.
 
@@ -193,7 +193,23 @@ git commit -m "feat(reaper): conservative AND-rule orphan detection for repowire
 
 ```python
 # добавить в tests/test_reap_orphans.py
-from scripts.repowire_reap_orphans import classify_cmdline, parse_environ
+from scripts.repowire_reap_orphans import classify_cmdline, live_peer_ids, parse_environ
+
+
+def test_live_peer_ids_includes_busy_excludes_offline():
+    peers = [
+        {"peer_id": "a", "status": "online"},
+        {"peer_id": "b", "status": "busy"},   # active worker/head — MUST be live
+        {"peer_id": "c", "status": "offline"},
+    ]
+    assert live_peer_ids(peers) == {"a", "b"}
+
+
+def test_busy_peer_with_dead_pane_is_not_orphan():
+    # double-AND-guard holds: busy peer stays in live-set -> not orphan even if pane gone
+    procs = [_proc(300, "ws_hook", "repow-busy", None)]
+    orphans = find_orphans(procs, live_panes=set(), live_peer_ids={"repow-busy"})
+    assert orphans == []
 
 
 def test_classify_cmdline_distinguishes_kinds():
@@ -287,16 +303,22 @@ def gather_live_panes() -> set[str]:
     return {p.strip() for p in out.splitlines() if p.strip()}
 
 
+def live_peer_ids(peers: list[dict]) -> set[str]:
+    """Peer_ids counted as LIVE = anything not offline (online AND busy).
+
+    busy = active worker/head session mid-task — MUST stay in the live-set, else
+    peer_dead=True for it and the AND-rule collapses to pane-guard-only on the
+    most valuable (active) sessions. Pure helper for direct testability.
+    """
+    return {p["peer_id"] for p in peers if p.get("status") != "offline"}
+
+
 def gather_live_peer_ids() -> set[str]:
     token = os.environ.get("REPOWIRE_AUTH_TOKEN")
     headers = {"Authorization": f"Bearer {token}"} if token else {}
     resp = httpx.get(f"{DAEMON_URL}/peers", headers=headers, timeout=10.0)
     resp.raise_for_status()
-    return {
-        p["peer_id"]
-        for p in resp.json()["peers"]
-        if p.get("status") == "online"
-    }
+    return live_peer_ids(resp.json()["peers"])
 
 
 def reap(orphans: list[RepowireProc], apply: bool) -> None:
