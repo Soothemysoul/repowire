@@ -198,6 +198,15 @@ class TestStopHandlerAckSweep:
     def _no_receipt_inline(self, monkeypatch):
         monkeypatch.delenv("REPOWIRE_RECEIPT_INLINE", raising=False)
 
+    @pytest.fixture(autouse=True)
+    def _receiver_offline(self, monkeypatch):
+        """Default the liveness probe to offline (beads-lfn6) so the defense-in-depth
+        sweep escalates as before, with no dependency on a live daemon. The
+        grace-backoff test overrides this locally."""
+        monkeypatch.setattr(
+            "repowire.hooks.stop_handler.receiver_is_live", lambda _peer: False
+        )
+
     def _run(self):
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = json.dumps(
@@ -246,6 +255,25 @@ class TestStopHandlerAckSweep:
              ):
             self._run()
         assert sent == []
+
+    def test_busy_receiver_gets_grace_not_escalation(self, monkeypatch):
+        """beads-lfn6: the defense-in-depth sweep must not false-escalate on a
+        busy-but-online receiver either — it re-arms the pending instead."""
+        monkeypatch.setattr(
+            "repowire.hooks.stop_handler.receiver_is_live", lambda _peer: True
+        )
+        utils.register_pending_ack(PANE, "notif-44445555", deadline=100.0, to_peer="director")
+        sent: list[str] = []
+        with patch("repowire.hooks.stop_handler.daemon_post"), \
+             patch("repowire.hooks.stop_handler.update_status", return_value=True), \
+             patch("repowire.hooks.stop_handler.get_pane_id", return_value=PANE), \
+             patch(
+                 "repowire.hooks.stop_handler.tmux_send_keys",
+                 side_effect=lambda pane, text, interrupt=False: sent.append(text) or True,
+             ):
+            self._run()
+        assert sent == []
+        assert "notif-44445555" in utils.read_ack_state(PANE)["pending"]
 
     def test_gated_by_inline_rollback_flag(self, monkeypatch):
         monkeypatch.setenv("REPOWIRE_RECEIPT_INLINE", "1")
