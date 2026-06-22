@@ -39,6 +39,7 @@ from repowire.hooks.utils import (
     pending_cid_path,
     read_pane_runtime_metadata,
     receipt_inline_enabled,
+    receiver_is_live,
     resolve_pending_ack,
     sweep_overdue_acks,
     tmux_send_keys,
@@ -495,9 +496,15 @@ def _run_ack_watchdog_once(pane_id: str, now: float) -> None:
     watchdog and the stop-hook defense-in-depth sweep stay single-sourced. The
     pop is atomic, so each overdue notify is escalated exactly once even across
     repeated ticks and across the two sweepers. No-op under the inline rollback
-    flag (handled inside the sweep).
+    flag (handled inside the sweep). ``receiver_is_live`` enables grace-backoff
+    (beads-lfn6): a busy-but-online receiver is not escalated as a failure.
     """
-    sweep_overdue_acks(pane_id, now=now, inject=lambda text: _tmux_send_keys(pane_id, text))
+    sweep_overdue_acks(
+        pane_id,
+        now=now,
+        inject=lambda text: _tmux_send_keys(pane_id, text),
+        is_receiver_live=receiver_is_live,
+    )
 
 
 async def _ack_watchdog_loop(pane_id: str) -> None:

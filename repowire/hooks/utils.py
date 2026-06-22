@@ -277,6 +277,34 @@ def pop_overdue_acks(pane_id: str | None, *, now: float) -> list[dict[str, Any]]
     return result or []
 
 
+def peek_overdue_acks(pane_id: str | None, *, now: float) -> list[dict[str, Any]]:
+    """Return pending entries whose deadline has passed WITHOUT removing them.
+
+    The non-destructive counterpart of ``pop_overdue_acks`` (beads-lfn6). The
+    grace-backoff sweep peeks first so it can probe each receiver's liveness
+    outside the flock (network I/O must not run under the lock), then finalizes
+    the escalate-vs-re-arm decision atomically. Each dict carries correlation_id,
+    to_peer, deadline and grace_count.
+    """
+    if not ack_state_path(pane_id).exists():
+        return []
+
+    def _mut(state: dict[str, Any]) -> list[dict[str, Any]]:
+        return [
+            {
+                "correlation_id": cid,
+                "to_peer": info.get("to_peer", "unknown"),
+                "deadline": info.get("deadline", 0.0),
+                "grace_count": int(info.get("grace_count", 0)),
+            }
+            for cid, info in state["pending"].items()
+            if info.get("deadline", 0.0) <= now
+        ]
+
+    result = _with_ack_state_locked(pane_id, _mut)
+    return result or []
+
+
 def clear_ack_state(pane_id: str | None) -> None:
     """Remove the ack-state file and its lock for a pane."""
     if not pane_id:
@@ -302,7 +330,12 @@ def receipt_inline_enabled() -> bool:
 
 
 def escalation_text(correlation_id: str, to_peer: str) -> str:
-    """Single actionable escalation injected when a notify goes un-ACKed."""
+    """Escalation for a likely delivery FAILURE (receiver offline/unreachable).
+
+    Used when the watchdog could not confirm the receiver is alive — the notify
+    may genuinely not have been delivered, so the actionable advice is to check
+    the receiver and resend.
+    """
     return (
         f"[repowire] notify {correlation_id} → {to_peer} не подтверждён "
         "(нет ACK о доставке за отведённое время). Доставка могла не пройти — "
@@ -310,24 +343,150 @@ def escalation_text(correlation_id: str, to_peer: str) -> str:
     )
 
 
+def stalled_escalation_text(correlation_id: str, to_peer: str) -> str:
+    """Escalation for a receiver that is ONLINE but kept silent past the grace cap.
+
+    beads-lfn6: distinct from ``escalation_text`` — here delivery almost certainly
+    succeeded (the message is queued for an online receiver), but no ACK arrived
+    even after the full grace window. That is an anomaly worth surfacing (very long
+    turn, or a broken receipt path) WITHOUT the misleading "delivery may have
+    failed" framing that would re-invite redundant resends.
+    """
+    return (
+        f"[repowire] notify {correlation_id} → {to_peer} доставлен, но получатель "
+        "online и долго не подтверждает (затянувшийся turn или сбой receipt-пути). "
+        "Повтор обычно НЕ нужен — проверь получателя, если важно."
+    )
+
+
+# --- beads-lfn6: liveness-aware grace-backoff (remainder of eg5x FIX #2) -------
+#
+# A receiver that is online but BUSY mid-turn longer than the ACK deadline is NOT
+# a delivery failure — its intent-ACK is merely late. Escalating it is a
+# false-positive that provokes a redundant resend. Before escalating an overdue
+# pending the sweep probes the receiver's liveness: a live receiver earns a
+# bounded grace extension instead of an escalation. The cap means a genuinely
+# broken receipt path (live receiver that never confirms) is still surfaced
+# eventually — grace never masks a real failure forever.
+_ACK_GRACE_BACKOFF_SEC = float(os.environ.get("REPOWIRE_ACK_GRACE_BACKOFF_SEC", "60"))
+_ACK_MAX_GRACE_ROUNDS = int(os.environ.get("REPOWIRE_ACK_MAX_GRACE_ROUNDS", "5"))
+# Tight timeout so a slow/hung daemon never stalls a watchdog tick (ws-hook loop
+# and stop-hook turn boundary both call the probe synchronously).
+_ACK_LIVENESS_TIMEOUT_SEC = float(os.environ.get("REPOWIRE_ACK_LIVENESS_TIMEOUT_SEC", "2"))
+
+
+def receiver_is_live(to_peer: str) -> bool:
+    """Best-effort liveness probe for grace-backoff: is ``to_peer`` online/busy?
+
+    Asks the daemon for the receiver's status. online/busy → live (the un-ACKed
+    notify is a busy receiver, not a failure → grace). Fail-closed: offline /
+    not-found / daemon-unreachable / probe error → not live → escalate, so a
+    genuine delivery failure is never masked and the sweep never loops in grace
+    forever. The GET uses a tight timeout so a hung daemon cannot stall the
+    watchdog tick.
+    """
+    from urllib.parse import quote
+
+    info = daemon_get(
+        f"/peers/{quote(to_peer, safe='')}", timeout=_ACK_LIVENESS_TIMEOUT_SEC
+    )
+    if not info:
+        return False
+    return info.get("status") in ("online", "busy")
+
+
+def _finalize_overdue_acks(
+    pane_id: str | None,
+    *,
+    now: float,
+    live_peers: dict[str, bool],
+) -> list[dict[str, Any]]:
+    """Atomically decide each still-overdue pending: re-arm (grace) or pop (escalate).
+
+    Re-evaluated under the flock so a receipt that resolved an entry between the
+    peek and now is honoured (the entry is gone → skipped), and so the two
+    sweepers never double-act: whichever finalizes first either pops the entry
+    (the other finds it gone) or extends its deadline beyond ``now`` (the other
+    no longer sees it as overdue). A live receiver with grace remaining gets its
+    deadline pushed out and grace_count bumped; otherwise it is popped and
+    returned for escalation.
+    """
+
+    def _mut(state: dict[str, Any]) -> list[dict[str, Any]]:
+        escalated: list[dict[str, Any]] = []
+        for cid, info in list(state["pending"].items()):
+            if info.get("deadline", 0.0) > now:
+                continue
+            to_peer = info.get("to_peer", "unknown")
+            grace = int(info.get("grace_count", 0))
+            live = live_peers.get(to_peer, False)
+            if live and grace < _ACK_MAX_GRACE_ROUNDS:
+                info["deadline"] = now + _ACK_GRACE_BACKOFF_SEC
+                info["grace_count"] = grace + 1
+            else:
+                # "stalled": delivered to an online receiver that never confirmed
+                # within the full grace window (long turn / broken receipt path) —
+                # NOT a delivery failure, so it gets a non-alarming escalation.
+                # "failed": receiver offline/unreachable → genuine delivery failure.
+                escalated.append(
+                    {
+                        "correlation_id": cid,
+                        "to_peer": to_peer,
+                        "deadline": info.get("deadline", 0.0),
+                        "reason": "stalled" if live else "failed",
+                    }
+                )
+                del state["pending"][cid]
+        return escalated
+
+    result = _with_ack_state_locked(pane_id, _mut)
+    return result or []
+
+
 def sweep_overdue_acks(
-    pane_id: str | None, *, now: float, inject: Callable[[str], Any]
+    pane_id: str | None,
+    *,
+    now: float,
+    inject: Callable[[str], Any],
+    is_receiver_live: Callable[[str], bool] | None = None,
 ) -> list[dict[str, Any]]:
     """Escalate every overdue un-ACKed pending exactly once, injecting via ``inject``.
 
     Shared by the ws-hook watchdog (always-on driver) and the stop-hook sweep
-    (defense-in-depth). ``pop_overdue_acks`` removes the entries it returns in the
-    same locked transaction, so whichever sweeper pops an entry first owns its
-    single escalation — the two paths never double-escalate. No-op under the
-    REPOWIRE_RECEIPT_INLINE rollback flag (pendings are left untouched). Returns
-    the escalated entries.
+    (defense-in-depth). No-op under the REPOWIRE_RECEIPT_INLINE rollback flag
+    (pendings are left untouched). Returns the escalated entries.
+
+    Without ``is_receiver_live`` the legacy behavior holds: ``pop_overdue_acks``
+    removes every overdue entry in one locked transaction (exactly-once across
+    the two sweepers) and each is escalated.
+
+    With ``is_receiver_live`` (beads-lfn6) the sweep peeks the overdue entries,
+    probes each distinct receiver's liveness OUTSIDE the lock, then finalizes
+    atomically: a live receiver with grace remaining is re-armed (deadline
+    extended, no escalation); an offline/unreachable receiver — or one whose
+    grace rounds are exhausted — is popped and escalated.
     """
     if receipt_inline_enabled():
         return []
-    overdue = pop_overdue_acks(pane_id, now=now)
-    for entry in overdue:
-        inject(escalation_text(entry["correlation_id"], entry.get("to_peer", "unknown")))
-    return overdue
+    if is_receiver_live is None:
+        overdue = pop_overdue_acks(pane_id, now=now)
+        for entry in overdue:
+            inject(escalation_text(entry["correlation_id"], entry.get("to_peer", "unknown")))
+        return overdue
+
+    candidates = peek_overdue_acks(pane_id, now=now)
+    if not candidates:
+        return []
+    live_peers = {c["to_peer"]: bool(is_receiver_live(c["to_peer"])) for c in candidates}
+    escalated = _finalize_overdue_acks(pane_id, now=now, live_peers=live_peers)
+    for entry in escalated:
+        cid = entry["correlation_id"]
+        to_peer = entry.get("to_peer", "unknown")
+        if entry.get("reason") == "stalled":
+            inject(stalled_escalation_text(cid, to_peer))
+        else:
+            inject(escalation_text(cid, to_peer))
+    return escalated
 
 
 def wait_for_normal_mode(pane_id: str, max_retries: int = 20, sleep_s: float = 0.05) -> None:
