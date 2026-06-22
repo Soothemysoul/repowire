@@ -200,11 +200,12 @@ class TestStopHandlerAckSweep:
 
     @pytest.fixture(autouse=True)
     def _receiver_offline(self, monkeypatch):
-        """Default the liveness probe to offline (beads-lfn6) so the defense-in-depth
-        sweep escalates as before, with no dependency on a live daemon. The
-        grace-backoff test overrides this locally."""
+        """Default the liveness probe to offline (beads-lfn6 / beads-k1b3 status
+        probe) so the defense-in-depth sweep escalates as before, with no
+        dependency on a live daemon. The grace-backoff test overrides this
+        locally."""
         monkeypatch.setattr(
-            "repowire.hooks.stop_handler.receiver_is_live", lambda _peer: False
+            "repowire.hooks.stop_handler.receiver_status", lambda _peer: "offline"
         )
 
     def _run(self):
@@ -260,7 +261,7 @@ class TestStopHandlerAckSweep:
         """beads-lfn6: the defense-in-depth sweep must not false-escalate on a
         busy-but-online receiver either — it re-arms the pending instead."""
         monkeypatch.setattr(
-            "repowire.hooks.stop_handler.receiver_is_live", lambda _peer: True
+            "repowire.hooks.stop_handler.receiver_status", lambda _peer: "online"
         )
         utils.register_pending_ack(PANE, "notif-44445555", deadline=100.0, to_peer="director")
         sent: list[str] = []

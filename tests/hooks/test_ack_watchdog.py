@@ -29,11 +29,12 @@ def _no_receipt_inline(monkeypatch):
 def _receiver_offline(monkeypatch):
     """Default these legacy tests to an offline receiver (no daemon dependency).
 
-    beads-lfn6 routed the watchdog through a liveness probe; without this patch
-    the driver would hit the real daemon. Offline → escalate, matching every
-    assertion below. Grace-backoff tests override this locally.
+    beads-lfn6 routed the watchdog through a liveness probe; beads-k1b3 switched
+    it to a status probe. Without this patch the driver would hit the real
+    daemon. Offline → escalate, matching every assertion below. Grace-backoff
+    tests override this locally.
     """
-    monkeypatch.setattr(wh, "receiver_is_live", lambda _peer: False)
+    monkeypatch.setattr(wh, "receiver_status", lambda _peer: "offline")
 
 
 @pytest.fixture
@@ -93,7 +94,7 @@ def test_inline_rollback_disables_watchdog(captured_send_keys, monkeypatch):
 def test_busy_receiver_gets_grace_not_escalation(captured_send_keys, monkeypatch):
     """beads-lfn6: a busy-but-online director must NOT trigger a false escalation —
     the driver re-arms the pending instead of injecting the failure prompt."""
-    monkeypatch.setattr(wh, "receiver_is_live", lambda _peer: True)
+    monkeypatch.setattr(wh, "receiver_status", lambda _peer: "online")
     utils.register_pending_ack(PANE, "notif-bbbb0001", deadline=100.0, to_peer="director")
     wh._run_ack_watchdog_once(PANE, now=200.0)
     assert captured_send_keys == []

@@ -184,6 +184,18 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         })
         logger.info(f"WebSocket connected: {assigned_name}@{circle} ({session_id}, {backend})")
 
+        # beads-k1b3 (q3v5 L2): a reconnect is the RESTARTING → ONLINE transition.
+        # Flush any notifies held while this peer was restarting, in FIFO order,
+        # over the freshly-connected transport. Best-effort: a flush error must
+        # never tear down the connection (the spool is durable — it retries on
+        # the next reconnect).
+        try:
+            await peer_registry.flush_hold_queue(session_id)
+        except Exception as flush_err:  # pragma: no cover — defensive
+            logger.warning(
+                "hold-queue flush failed for %s: %s", session_id, flush_err
+            )
+
         # Message loop
         while True:
             data = await websocket.receive_json()
@@ -220,8 +232,11 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
         if session_id:
             removed = await transport.disconnect(session_id, websocket)
             if removed:
-                await query_tracker.cancel_queries_to_peer(session_id)
-                await peer_registry.update_peer_status(session_id, PeerStatus.OFFLINE)
+                # beads-k1b3: mark_disconnected keeps a RESTARTING peer RESTARTING
+                # (its pane dies by design mid-self-restart — it is not dead) so
+                # the daemon goes on holding notifies; any other status demotes to
+                # OFFLINE as before. It cancels pending queries either way.
+                await peer_registry.mark_disconnected(session_id)
 
 
 async def _handle_message(

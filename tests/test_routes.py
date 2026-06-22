@@ -426,3 +426,37 @@ class TestSessionUpdate:
 
         r = await client.get(f"/peers/{name}")
         assert r.json()["status"] == "busy"
+
+    async def test_update_status_restarting(self, client):
+        """beads-k1b3: /session/update accepts the new RESTARTING status so a
+        subordinate can announce its context-overflow restart to the daemon."""
+        r = await client.post("/peers", json={
+            "name": "restartpeer",
+            "path": "/tmp/restartpeer",
+            "circle": "default",
+            "backend": "claude-code",
+        })
+        name = r.json()["display_name"]
+        r = await client.post("/session/update", json={
+            "peer_name": name,
+            "status": "restarting",
+        })
+        assert r.status_code == 200
+
+        r = await client.get(f"/peers/{name}")
+        assert r.json()["status"] == "restarting"
+
+    async def test_update_status_invalid_rejected(self, client):
+        r = await client.post("/peers", json={
+            "name": "badstatuspeer",
+            "path": "/tmp/badstatuspeer",
+            "circle": "default",
+            "backend": "claude-code",
+        })
+        name = r.json()["display_name"]
+        r = await client.post("/session/update", json={
+            "peer_name": name,
+            "status": "bogus",
+        })
+        assert r.status_code == 400
+        assert "restarting" in r.json()["detail"]

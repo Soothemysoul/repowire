@@ -26,6 +26,11 @@ class PeerStatus(str, Enum):
     ONLINE = "online"
     BUSY = "busy"
     OFFLINE = "offline"
+    # beads-k1b3 (q3v5 L2): a subordinate self-restarting on context-overflow.
+    # Distinct from OFFLINE (genuine death → reject/escalate): notifies to a
+    # RESTARTING peer are HELD in a durable spool and flushed on respawn, and
+    # the ACK-watchdog grants a longer (separate) grace before escalating.
+    RESTARTING = "restarting"
 
 
 class Peer(BaseModel):
@@ -81,6 +86,16 @@ class Peer(BaseModel):
             "Telemetry for the periodic pane-liveness sweep (B-3) to reason about "
             "long-running turns — NOT an eviction criterion (a live long turn must "
             "never be killed; the sweep evicts only on a dead pane)."
+        ),
+    )
+    restarting_since: datetime | None = Field(
+        None,
+        description=(
+            "Timestamp of most recent transition to RESTARTING (beads-k1b3). "
+            "None when not RESTARTING. Used by the liveness sweep to demote a "
+            "stuck restart (one that never reconnects within the restart-cap) "
+            "back to OFFLINE — a stuck restart is a genuine failure and must not "
+            "be masked as RESTARTING forever."
         ),
     )
     metadata: dict[str, Any] = Field(default_factory=dict, description="Additional metadata")

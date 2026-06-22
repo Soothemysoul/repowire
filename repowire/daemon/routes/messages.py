@@ -165,7 +165,7 @@ class SessionUpdateRequest(BaseModel):
 
     peer_name: str | None = Field(None, description="Peer name")
     pane_id: str | None = Field(None, description="Tmux pane ID (alternative to peer_name)")
-    status: str = Field(..., description="New status (online, busy, offline)")
+    status: str = Field(..., description="New status (online, busy, offline, restarting)")
     metadata: dict | None = Field(None, description="Optional metadata")
 
 
@@ -312,7 +312,10 @@ async def update_session(
     except ValueError:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid status: {request.status}. Must be one of: online, busy, offline",
+            detail=(
+                f"Invalid status: {request.status}. "
+                "Must be one of: online, busy, offline, restarting"
+            ),
         )
 
     # Resolve peer identifier
