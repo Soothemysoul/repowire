@@ -68,9 +68,17 @@
 - `receiver_is_live()` (`repowire/hooks/utils.py:378`, lfn6 liveness-проба через `daemon_get`): `RESTARTING` трактуется как **live/grace** (аналогично `BUSY`) — watchdog НЕ эскалирует «не подтверждён».
 - **Отдельный restart-cap** (Q3): новый env, напр. `REPOWIRE_RESTART_GRACE_*` (НЕ переиспользовать `REPOWIRE_ACK_*` busy-cap). Размер ~ типовое время respawn+resume (несколько минут) с запасом. По исчерпании — **эскалация** (рестарт застрял = настоящий fail, не маскировать).
 
-### 4.2 L1 — system (beads-tbwa)
+### 4.2 L1 — system (beads-tbwa + beads-q5oo)
 
-**(a) PRE-restart сигнал** (`ops-typed/cmd/agent-stop/main.go`, путь context-overflow, перед teardown):
+> **Амендмент (2026-06-22):** L1 расширен фолдом **beads-q5oo** (marker-robustness) как фундамента под RESTARTING-сигнал. Причина: 1b пишет/потребляет restart-marker, поэтому на хрупкой marker-базе (backstop спурьёзно респавнил commanded-shutdown агента при зависшем restart-marker) сигнал строить нельзя. Реализовано одним координированным PR #291 (system).
+
+**(0) Marker-robustness фундамент** (beads-q5oo, defense-in-depth, lf8.1 НЕ тронут):
+- `brain-watchdog` backstop (`ops-typed/cmd/brain-watchdog/restart_markers.go`): `shutdownSupersedesRestart` — mtime-сравнение; `.shutdown-intentional` новее restart-запроса И нет более нового `.restart-intentional` → suppress respawn + clear залипшего marker'а. Зеркалит lf8.1 priority («restart wins»: `.restart-intentional` новее → respawn).
+- `agent-stop` (`ops-typed/cmd/agent-stop/main.go`): commanded-shutdown чистит залипший `restart-requested.json` (AGENT_RESTART-путь его сохраняет) → разделение `.restart-intentional` (respawn+consume) / `.shutdown-intentional` (suppress) / hung-stale.
+- `subordinate_resume_brief` (SessionStart): idempotent self-consume marker'а после успешного респавна (не залипает).
+- **lf8.1-инвариант (HARD):** обе семантики СОХРАНЕНЫ + покрыты тестами на двух уровнях (backstop `TestShutdownSupersedes_{NoShutdownMarker,ShutdownNewerThanRequest,ShutdownOlderThanRequest,RestartWinsOverShutdown}`; agent-stop `TestRestart_winsOverForceShutdown`, `Test{Force,Gated}Shutdown_clearsStaleRestartRequest`, `Test{Restart,BlockedShutdown}_preservesRestartRequest`): restart → РЕСПАВНИТ, shutdown → НЕ респавнит.
+
+**(a) PRE-restart сигнал** (`ops-typed/cmd/agent-stop/main.go`, путь context-overflow, перед teardown) — на фундаменте (0):
 - Подчинённый ставит свой статус `RESTARTING` в daemon (через `/status`).
 - `notify_peer('<supervisor>', 'context-overflow restart, возобновляюсь из brief, claimed: <beads>')`.
 - Порядок load-bearing: статус `RESTARTING` выставляется **до** того, как pane умрёт, чтобы daemon уже холдил входящие.
@@ -82,8 +90,8 @@
 
 ### 4.3 Координация катки (Q4)
 
-1. **PR #1 (repowire-fork, beads-k1b3):** PeerStatus.RESTARTING + /status расширение + daemon hold-queue + watchdog restart-cap. Деплой = daemon-restart.
-2. **PR #2 (system, beads-tbwa):** agent-stop pre-signal + resume-flow post wake-ack. Зависит от PR #1 (RESTARTING-статус + hold-queue должны уже жить в daemon).
+1. **PR #1 (repowire-fork, beads-k1b3) — ✅ MERGED (PR #40, 082018c7):** PeerStatus.RESTARTING + /status расширение + daemon hold-queue + watchdog restart-cap. Деплой = daemon-restart.
+2. **PR #2 (system, beads-tbwa + beads-q5oo) — ✅ MERGED (PR #291, 7cc6cfdc):** marker-robustness фундамент (q5oo) + agent-stop pre-signal + resume-flow post wake-ack (tbwa). Зависит от PR #1 (RESTARTING-статус + hold-queue должны уже жить в daemon).
 
 ---
 
