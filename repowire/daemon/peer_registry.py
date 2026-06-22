@@ -22,8 +22,15 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
+from repowire.daemon import hold_queue
+from repowire.daemon.websocket_transport import TransportError
 from repowire.naming import build_base_display_name, normalize_circle, sanitize_folder_name
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
+
+# Matches the canonical correlation-id token the MCP embeds in a notify's text
+# (e.g. "[#notif-656e31bc]"). Parsed only for hold-queue telemetry — a held
+# entry replays its full text verbatim, so a missing cid is harmless.
+_CORRELATION_RE = re.compile(r"notif-[a-f0-9]{8}")
 
 if TYPE_CHECKING:
     from repowire.daemon.message_router import MessageRouter
@@ -44,6 +51,14 @@ _STALE_SIBLING_PURGE_THRESHOLD_SEC = 300.0
 # OFFLINE by liveness_tick. 30s is small enough to keep cleanup responsive
 # but large enough to outlast typical reconnect delays.
 _MIN_OFFLINE_SECONDS_FOR_TAKEOVER = 30.0
+
+
+def _restart_peer_cap_sec() -> float:
+    """beads-k1b3: how long a peer may stay RESTARTING before the liveness sweep
+    gives up and demotes it to OFFLINE. Sized to the respawn+resume timescale
+    (minutes) with headroom; past it the restart is stuck = a genuine failure.
+    Read lazily from the env so operator overrides / tests take effect."""
+    return float(os.environ.get("REPOWIRE_RESTART_PEER_CAP_SEC", "900"))
 
 # ---------------------------------------------------------------------------
 # SessionMapping dataclass (previously in session_mapper.py)
@@ -87,11 +102,16 @@ class PeerRegistry:
         query_tracker: QueryTracker | None = None,
         transport: WebSocketTransport | None = None,
         persistence_path: Path | None = None,
+        hold_queue_dir: Path | None = None,
     ) -> None:
         self._config = config
         self._router = message_router
         self._query_tracker = query_tracker
         self._transport = transport
+        # beads-k1b3: durable spool for notifies held while a peer is RESTARTING.
+        self._holdq_dir = (
+            Path(hold_queue_dir) if hold_queue_dir is not None else hold_queue.holdq_dir()
+        )
 
         # Peer registry: peer_id -> Peer (single source of truth)
         self._peers: dict[str, Peer] = {}
@@ -578,18 +598,26 @@ class PeerRegistry:
         """
         now = datetime.now(timezone.utc)
 
-        # Sub-case A: OFFLINE peer in _peers
+        # Sub-case A: OFFLINE or RESTARTING peer in _peers.
+        # beads-k1b3: a RESTARTING peer is reconnecting after a self-restart —
+        # always reuse its identity (even past reconnect_ttl: respawn+resume runs
+        # on a longer timescale than a transient WS drop), so the peer_id is
+        # preserved and its hold-queue (keyed by peer_id) is flushed on connect.
         for sid, peer in self._peers.items():
             if (
                 peer.path == path
                 and peer.circle == circle
                 and peer.backend == backend
-                and peer.status == PeerStatus.OFFLINE
+                and peer.status in (PeerStatus.OFFLINE, PeerStatus.RESTARTING)
             ):
                 age = (now - peer.last_seen).total_seconds() if peer.last_seen else 0.0
-                if self._is_singleton_role(path) or age <= reconnect_ttl:
-                    peer.status = PeerStatus.ONLINE
-                    peer.last_seen = now
+                reuse = (
+                    peer.status == PeerStatus.RESTARTING
+                    or self._is_singleton_role(path)
+                    or age <= reconnect_ttl
+                )
+                if reuse:
+                    _set_peer_status(peer, PeerStatus.ONLINE)
                     if role is not None:
                         peer.role = role
                     if pane_id:
@@ -1149,8 +1177,23 @@ class PeerRegistry:
             self._check_circle_access_by_peers(from_obj, peer, bypass_circle)
             peer_id = peer.peer_id
             peer_name = peer.display_name
+            to_status = peer.status
             resolved_from_peer_id = from_obj.peer_id if from_obj else None
             from_peer_role = from_obj.role.value if from_obj and from_obj.role else None
+
+        # beads-k1b3: a RESTARTING receiver is mid-respawn — its pane is dead so
+        # delivery would fail, but it IS coming back. Hold the notify in the
+        # durable spool instead of rejecting it; the WS-reconnect path flushes it.
+        if to_status == PeerStatus.RESTARTING:
+            self._hold_notification(
+                peer_id=peer_id,
+                from_peer=from_peer,
+                from_peer_id=resolved_from_peer_id,
+                from_peer_role=from_peer_role,
+                text=text,
+                interrupt=interrupt,
+            )
+            return
 
         self.add_event(
             "notification",
@@ -1169,6 +1212,89 @@ class PeerRegistry:
             from_peer_role=from_peer_role,
             from_peer_id=resolved_from_peer_id,
         )
+
+    def _hold_notification(
+        self,
+        *,
+        peer_id: str,
+        from_peer: str,
+        from_peer_id: str | None,
+        from_peer_role: str | None,
+        text: str,
+        interrupt: bool,
+    ) -> None:
+        """Spool a notify destined for a RESTARTING peer (beads-k1b3).
+
+        Raises ``TransportError`` when the spool's size/age bound is exceeded —
+        the restart is stuck, so the held notify is surfaced to the sender as a
+        genuine delivery failure (the /notify route maps it to a 503), exactly
+        as an OFFLINE peer would. This is the bound that stops a wedged restart
+        from growing the spool without limit.
+        """
+        match = _CORRELATION_RE.search(text)
+        entry = {
+            "correlation_id": match.group(0) if match else None,
+            "from_peer": from_peer,
+            "from_peer_id": from_peer_id,
+            "from_peer_role": from_peer_role,
+            "text": text,
+            "interrupt": interrupt,
+        }
+        try:
+            hold_queue.enqueue(self._holdq_dir, peer_id, entry, now=time.time())
+        except hold_queue.HoldQueueFullError as e:
+            raise TransportError(str(e)) from e
+        self.add_event(
+            "notification_held",
+            {
+                "from": from_peer, "to_peer_id": peer_id,
+                "from_peer_id": from_peer_id,
+                "correlation_id": entry["correlation_id"],
+            },
+        )
+
+    async def flush_hold_queue(self, peer_id: str) -> int:
+        """Deliver a reconnected peer's held notifies in FIFO order, then clear.
+
+        Called from the WS-reconnect path once the peer is back ONLINE. Delivers
+        each spooled notify via the normal transport (preserving the embedded
+        correlation_id so the sender's ACK-watchdog still threads). Best-effort:
+        if a delivery fails mid-flush (the peer dropped again), the undelivered
+        tail is kept for the next reconnect rather than lost. Returns the number
+        of notifies actually delivered.
+        """
+        entries = hold_queue.read_all(self._holdq_dir, peer_id)
+        if not entries:
+            return 0
+        async with self._lock:
+            peer = self._peers.get(peer_id)
+            peer_name = peer.display_name if peer else peer_id
+
+        delivered = 0
+        for idx, entry in enumerate(entries):
+            try:
+                await self._router.send_notification(
+                    from_peer=entry.get("from_peer", ""),
+                    to_session_id=peer_id,
+                    to_peer_name=peer_name,
+                    text=entry.get("text", ""),
+                    interrupt=bool(entry.get("interrupt", False)),
+                    from_peer_role=entry.get("from_peer_role"),
+                    from_peer_id=entry.get("from_peer_id"),
+                )
+                delivered += 1
+            except Exception as exc:
+                logger.warning(
+                    "hold-queue flush for %s interrupted after %d/%d: %s",
+                    peer_id, delivered, len(entries), exc,
+                )
+                hold_queue.replace(self._holdq_dir, peer_id, entries[idx:])
+                return delivered
+
+        hold_queue.clear(self._holdq_dir, peer_id)
+        self.add_event("hold_queue_flush", {"to_peer_id": peer_id, "count": delivered})
+        logger.info("flushed %d held notifies to %s", delivered, peer_id)
+        return delivered
 
     async def broadcast(
         self,
@@ -1365,6 +1491,34 @@ class PeerRegistry:
             cancelled = await self._query_tracker.cancel_queries_to_peer(session_id)
 
         logger.info(f"Marked {identifier} offline, cancelled {cancelled} queries")
+        return cancelled
+
+    async def mark_disconnected(self, identifier: str) -> int:
+        """Handle a WS disconnect: demote to OFFLINE UNLESS the peer is RESTARTING.
+
+        beads-k1b3: a RESTARTING peer's pane dies (WS drops) by design during a
+        context-overflow self-restart — it is NOT dead, it is coming back. We
+        must keep it RESTARTING so the daemon goes on holding incoming notifies
+        in the durable spool; demoting it to OFFLINE here would clobber the
+        restart signal and start rejecting (503) messages in the restart window.
+        Pending queries are still cancelled either way (a query can't be answered
+        by a peer with no live transport). Returns cancelled-query count.
+        """
+        async with self._lock:
+            peer = self._lookup_peer_unlocked(identifier)
+            if not peer:
+                return 0
+            session_id = peer.peer_id
+            is_restarting = peer.status == PeerStatus.RESTARTING
+            if not is_restarting:
+                _set_peer_status(peer, PeerStatus.OFFLINE)
+
+        cancelled = 0
+        if self._query_tracker:
+            cancelled = await self._query_tracker.cancel_queries_to_peer(session_id)
+
+        if is_restarting:
+            logger.info("WS dropped for RESTARTING peer %s — kept RESTARTING", identifier)
         return cancelled
 
     # ------------------------------------------------------------------
@@ -1591,6 +1745,8 @@ class PeerRegistry:
         if not transport:
             return
 
+        now = datetime.now(timezone.utc)
+        cap = _restart_peer_cap_sec()
         async with self._lock:
             ghosts = [
                 p.peer_id for p in self._peers.values()
@@ -1602,16 +1758,30 @@ class PeerRegistry:
                 if p.status == PeerStatus.OFFLINE
                 and transport.is_connected(p.peer_id)
             ]
+            # beads-k1b3: a RESTARTING peer that never reconnects within the
+            # restart-cap is a stuck restart = genuine failure. Demote it to
+            # OFFLINE so incoming notifies stop being held and start rejecting
+            # (503), and its orphaned hold-queue spool is cleared. A fresh
+            # restart (restarting_since within the cap) is left untouched.
+            stuck_restarts = [
+                p.peer_id for p in self._peers.values()
+                if p.status == PeerStatus.RESTARTING
+                and p.restarting_since is not None
+                and (now - p.restarting_since).total_seconds() > cap
+            ]
 
         for peer_id in ghosts:
             await self.mark_offline(peer_id)
         for peer_id in resurrected:
             await self.update_peer_status(peer_id, PeerStatus.ONLINE)
+        for peer_id in stuck_restarts:
+            await self.mark_offline(peer_id)
+            hold_queue.clear(self._holdq_dir, peer_id)
 
-        if ghosts or resurrected:
+        if ghosts or resurrected or stuck_restarts:
             logger.info(
-                "liveness_tick: demoted=%d promoted=%d",
-                len(ghosts), len(resurrected),
+                "liveness_tick: demoted=%d promoted=%d stuck_restarts=%d",
+                len(ghosts), len(resurrected), len(stuck_restarts),
             )
 
     async def liveness_tick_loop(self, interval_sec: float = 5.0) -> None:
@@ -1731,6 +1901,11 @@ def _set_peer_status(peer: Any, status: PeerStatus) -> None:
     BUSY: stamp busy_since IF this is a new transition into BUSY (preserves
     the original timestamp on re-BUSY no-op so the pane-liveness sweep can
     reason from the FIRST BUSY transition). Any non-BUSY status clears it.
+
+    RESTARTING (beads-k1b3): stamp restarting_since IF this is a new transition
+    into RESTARTING (preserves the original timestamp on re-RESTARTING no-op so
+    the restart-cap counts from the FIRST restart signal). Any non-RESTARTING
+    status clears it.
     """
     now = datetime.now(timezone.utc)
     if status == PeerStatus.OFFLINE:
@@ -1743,5 +1918,10 @@ def _set_peer_status(peer: Any, status: PeerStatus) -> None:
             peer.busy_since = now
     else:
         peer.busy_since = None
+    if status == PeerStatus.RESTARTING:
+        if peer.status != PeerStatus.RESTARTING or peer.restarting_since is None:
+            peer.restarting_since = now
+    else:
+        peer.restarting_since = None
     peer.status = status
     peer.last_seen = now

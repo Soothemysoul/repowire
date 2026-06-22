@@ -20,7 +20,7 @@ from repowire.hooks.utils import (
     marker_dir,
     pending_cid_path,
     read_pane_runtime_metadata,
-    receiver_is_live,
+    receiver_status,
     resolve_agent_role,
     sweep_overdue_acks,
     tmux_send_keys,
@@ -262,7 +262,7 @@ def _sweep_overdue_acks(pane_id: str) -> None:
         pane_id,
         now=time.time(),
         inject=lambda text: tmux_send_keys(pane_id, text),
-        is_receiver_live=receiver_is_live,
+        receiver_status=receiver_status,
     )
 
 
