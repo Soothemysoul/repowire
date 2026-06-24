@@ -483,6 +483,13 @@ class PeerRegistry:
         for sid, peer in self._peers.items():
             if peer.status != PeerStatus.OFFLINE:
                 continue
+            # beads-7ijt: never purge a user-facing service peer
+            # (SERVICE/ORCHESTRATOR/HUMAN) — it must stay visible offline.
+            # Defense-in-depth: today's service display_names lack a timestamp
+            # so stem extraction already bails, but a future timestamped form
+            # must not regress this invariant.
+            if peer.bypasses_circles:
+                continue
             if peer.circle != circle or peer.backend != backend:
                 continue
             if peer.display_name == new_display_name:
@@ -1705,6 +1712,10 @@ class PeerRegistry:
             stale = [
                 pid for pid, p in self._peers.items()
                 if p.status == PeerStatus.OFFLINE
+                # beads-7ijt: user-facing service peers (SERVICE/ORCHESTRATOR/
+                # HUMAN — bypasses_circles) must persist offline so the user can
+                # still message them and the agent-gateway respawns on demand.
+                and not p.bypasses_circles
                 and p.last_seen
                 and (now - p.last_seen.timestamp()) > max_age
             ]

@@ -42,6 +42,11 @@ _NOTIF_ID_RE = re.compile(r"\[#(notif-[0-9a-f]+)\]")
 _MSG_MAP_MAX = 1000   # max entries in reply-context map (runtime in-memory)
 _MSG_MAP_TTL = 86400  # 24 h in seconds
 
+# beads-7ijt: roles that bypass circle boundaries (Peer.bypasses_circles) are
+# user-facing service peers — they stay listed in /peers even when OFFLINE so
+# the user can message them and the agent-gateway respawns them on demand.
+_USER_FACING_ROLES = ("service", "orchestrator", "human")
+
 
 def _esc(text: str) -> str:
     """Escape for Telegram MarkdownV2."""
@@ -532,21 +537,29 @@ class TelegramPeer:
                 params={"circle": self._circle},
             )
             peers = r.json().get("peers", [])
-            active = [p for p in peers if p.get("status") in ("online", "busy")]
+            # beads-7ijt: user-facing service peers (service/orchestrator/human)
+            # stay selectable even when OFFLINE — the user must be able to
+            # message them, and the agent-gateway respawns them on demand.
+            # Regular agents are only listed while online/busy.
+            visible = [
+                p for p in peers
+                if p.get("status") in ("online", "busy")
+                or p.get("role") in _USER_FACING_ROLES
+            ]
 
-            if not active:
+            if not visible:
                 await self._tg_send("No peers online\\.")
                 return
 
             lines = []
             buttons = []
-            for p in active:
+            for p in visible:
                 name = p.get("display_name", p.get("name", "?"))
                 path = p.get("path", "")
                 folder = Path(path).name or name
                 desc = p.get("description", "")
                 branch = p.get("metadata", {}).get("branch", "")
-                icon = "🟢" if p.get("status") == "online" else "🟡"
+                icon = {"online": "🟢", "busy": "🟡"}.get(p.get("status"), "⚪")
 
                 line = f"{icon} *{_esc(folder)}* `{_esc(name)}`"
                 if branch:
