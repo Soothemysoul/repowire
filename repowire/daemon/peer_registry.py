@@ -24,7 +24,12 @@ from uuid import uuid4
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT, AgentType, Config
 from repowire.daemon import hold_queue
 from repowire.daemon.websocket_transport import TransportError
-from repowire.naming import build_base_display_name, normalize_circle, sanitize_folder_name
+from repowire.naming import (
+    build_base_display_name,
+    normalize_circle,
+    sanitize_folder_name,
+    strip_backend_suffix,
+)
 from repowire.protocol.peers import Peer, PeerRole, PeerStatus
 
 # Matches the canonical correlation-id token the MCP embeds in a notify's text
@@ -349,7 +354,12 @@ class PeerRegistry:
         if circle:
             matches = [p for p in matches if p.circle == circle]
         if not matches:
-            return None
+            # beads-7ijt.1: no exact display_name match — try the bare-name
+            # stem-alias fallback (escalation targets register suffixed as
+            # <folder>-<backend> but are addressed bare, e.g. 'telegram').
+            return self._alias_resolve_unlocked(
+                identifier, circle=circle, raise_ambiguous=raise_ambiguous
+            )
         if len(matches) == 1:
             return matches[0]
         circles = sorted({p.circle for p in matches})
@@ -357,6 +367,50 @@ class PeerRegistry:
             raise AmbiguousPeerError(identifier, circles)
         # Best-effort preference tiebreak (same-circle dup, or raise disabled).
         return self._lookup_peer_unlocked(identifier, circle=circle)
+
+    def _alias_resolve_unlocked(
+        self,
+        identifier: str,
+        circle: str | None = None,
+        *,
+        raise_ambiguous: bool = False,
+    ) -> Peer | None:
+        """Bare-name stem-alias fallback for escalation targets (beads-7ijt.1).
+
+        Called ONLY after an exact ``display_name ==`` match has missed. Live
+        peers register as ``<folder>-<backend>`` (``telegram-claude-code``,
+        ``director-claude-code``) via ``_build_display_name``, but the documented
+        special-peer form addresses them BARE (``notify_peer('telegram')`` — MCP
+        docstring, global CLAUDE.md). Resolve the bare name by stripping each
+        candidate's ``-<backend>`` suffix and comparing — but ONLY against
+        ``bypasses_circles`` peers (SERVICE / ORCHESTRATOR / HUMAN), i.e. exactly
+        the escalation targets (telegram / director / brain-admin / slack /
+        dashboard). Regular AGENT namesakes are intentionally NOT stem-aliased
+        (Variant A, director-approved): keeps the blast radius minimal and leaves
+        bof3's FULL-name ambiguity the only AGENT-namesake ambiguity path.
+
+        Ambiguity-aware like the exact path: when the stem matches peers across
+        >1 circle and ``raise_ambiguous`` is set, raise AmbiguousPeerError
+        (reusing bof3 semantics) instead of a silent preference pick. Internal
+        best-effort callers (``raise_ambiguous`` False) keep the tiebreak.
+        """
+        matches = [
+            p
+            for p in self._peers.values()
+            if p.bypasses_circles
+            and strip_backend_suffix(p.display_name) == identifier
+        ]
+        if circle:
+            matches = [p for p in matches if p.circle == circle]
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        circles = sorted({p.circle for p in matches})
+        if raise_ambiguous and len(circles) > 1:
+            raise AmbiguousPeerError(identifier, circles)
+        # Best-effort preference tiebreak (same-circle dup, or raise disabled).
+        return self._lookup_peer_unlocked(matches[0].display_name, circle=circle)
 
     @staticmethod
     def _sanitize_folder_name(name: str) -> str:
