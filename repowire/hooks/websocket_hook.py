@@ -15,6 +15,7 @@ import subprocess
 import sys
 import time
 from contextlib import suppress
+from urllib.parse import quote
 
 try:
     import httpx
@@ -183,6 +184,16 @@ def _handle_refresh_signal(target_epoch: str, reason: str, scope: str) -> bool:
 _WARN_AFTER_ATTEMPTS = 3
 _warn_active = False
 
+# beads-wi7y: after this many consecutive post-connect register-verify failures
+# (DEFINITE absence from the daemon registry) the hook fires a one-shot alert to
+# the supervisor + human. Comfortably above a transient micro-race; each failure
+# also forces a fresh reconnect, so the threshold spans several handshakes.
+_VERIFY_FAIL_ALERT_THRESHOLD = 3
+# One-shot dedup for the register-verify alert (reset on a successful verify),
+# mirroring _warn_active. Prevents a daemon-restart reconnect storm from spamming
+# the supervisor.
+_register_alert_sent = False
+
 
 def _pane_warn_set(pane_id: str) -> None:
     """Show a visible WS-lost warning in the pane WITHOUT touching stdin.
@@ -341,6 +352,126 @@ async def _daemon_post(path: str, body: dict) -> None:
             await client.post(url, json=body)
     except Exception as e:  # pragma: no cover
         logger.debug("auto-ACK post failed: %s", e)
+
+
+# ---------------------------------------------------------------------------
+# beads-wi7y: register-verify after (re)connect
+#
+# Root cause (s8di): the daemon's in-memory `_peers` registry — the source the
+# watchdog reads via GET /peers (PeerLastSeenEpoch) — is wiped on every daemon
+# restart; only SessionMappings persist (identity, no liveness). A live session
+# reappears ONLY if its WS-hook reconnects and re-registers; the `connected`
+# handshake is trusted with no read-back. If re-registration silently never
+# lands, the scope stays mesh-invisible until the 60-min reaper kills it.
+#
+# These helpers add an active post-connect verify: confirm we are really in
+# GET /peers/by-pane. DEFINITE absence → forced reconnect + one-shot alert;
+# a TRANSIENT fetch error → soft (never drop a healthy connection — design §8).
+# ---------------------------------------------------------------------------
+
+
+def _resolve_supervisor(role: str | None) -> str | None:
+    """Map an agent role-dir name to its supervisor role for register-verify
+    alerts. Port of brain-watchdog ``resolveSupervisor`` (no_peer_record.go,
+    beads-s8di). Returns None for director (human-only) and unknown/empty roles.
+    """
+    if not role:
+        return None
+    if role.endswith("-worker"):
+        return role[: -len("-worker")] + "-head"
+    if role == "gsd-dev":
+        return "pm"
+    if role.endswith("-head") or role in ("pm", "brain-admin", "librarian", "project-init"):
+        return "director"
+    if role == "director":
+        return None
+    return "director"
+
+
+async def _peer_present_by_pane(pane_id: str, expected_peer_id: str) -> bool | None:
+    """Single GET /peers/by-pane probe. Tri-state:
+
+    - True  — 200 and the registry's peer_id for this pane is OURS.
+    - False — DEFINITE absence: 404 (no peer for pane) or 200 with a different
+              peer_id (someone else holds the pane; we are not registered).
+    - None  — TRANSIENT/inconclusive: network error, daemon unreachable, 5xx, or
+              an unparseable body. Caller must treat this softly (§8).
+    """
+    if httpx is None:
+        return None
+    daemon_host = os.environ.get("REPOWIRE_DAEMON_HOST", "127.0.0.1")
+    daemon_port = os.environ.get("REPOWIRE_DAEMON_PORT", "8377")
+    url = f"http://{daemon_host}:{daemon_port}/peers/by-pane/{quote(pane_id, safe='')}"
+    headers: dict[str, str] = {}
+    token = os.environ.get("REPOWIRE_AUTH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(url, headers=headers)
+    except Exception as e:
+        logger.debug("register-verify GET error (transient): %s", e)
+        return None
+    if resp.status_code == 404:
+        return False
+    if resp.status_code != 200:
+        return None  # 5xx / unexpected → inconclusive, not a definite absence
+    try:
+        data = resp.json()
+    except Exception:
+        return None
+    return data.get("peer_id") == expected_peer_id
+
+
+async def _verify_registration(pane_id: str, expected_peer_id: str) -> bool | None:
+    """Confirm the peer is actually in the daemon registry after a (re)connect.
+
+    Tri-state (True=present, False=definite absence, None=transient). One
+    immediate retry absorbs a register/persist micro-race before declaring a
+    definite absence (design §7.3).
+    """
+    outcome = await _peer_present_by_pane(pane_id, expected_peer_id)
+    if outcome is False:
+        outcome = await _peer_present_by_pane(pane_id, expected_peer_id)
+    return outcome
+
+
+async def _emit_register_alert(*, my_name: str, role: str | None, reason: str) -> None:
+    """One-shot alert when post-connect register-verify keeps failing.
+
+    Routes to the supervisor via mesh /notify (``_resolve_supervisor``) AND
+    ALWAYS the human via telegram, so the warning is never silently lost —
+    mirroring brain-watchdog's no_peer_record alert. /notify is plain HTTP and is
+    NOT gated by our (possibly-lost) WS registration, so the alert lands even
+    when we are mesh-invisible.
+    """
+    text = (
+        f"register-verify: {my_name} ({role or 'unknown'}) подключился к daemon, "
+        f"но НЕ виден в реестре ({reason}). Вероятна потеря mesh-регистрации (s8di); "
+        f"hook продолжает forced-reconnect. Проверь repowire-коннект, при необходимости respawn. "
+        f"— INFRA RECEIPT, DO NOT REPLY"
+    )
+    supervisor = _resolve_supervisor(role)
+    if supervisor:
+        await _daemon_post(
+            "/notify",
+            {
+                "from_peer": my_name,
+                "to_peer": f"{supervisor}-claude-code",
+                "text": text,
+                "bypass_circle": True,
+            },
+        )
+    # Human channel — always.
+    await _daemon_post(
+        "/notify",
+        {
+            "from_peer": my_name,
+            "to_peer": "telegram",
+            "text": text,
+            "bypass_circle": True,
+        },
+    )
 
 
 def _ack_body(
@@ -893,6 +1024,10 @@ async def _reconnect_loop(
     attempt: int,
 ) -> int:
     """Reconnect/message loop, extracted so main() can own the watchdog lifecycle."""
+    global _register_alert_sent
+    # beads-wi7y: consecutive post-connect register-verify failures, persisted
+    # across forced-reconnect iterations (reset only on a successful verify).
+    verify_fail = 0
     while True:
         if not _is_pane_safe(pane_id):
             logger.info("Pane %s no longer safe, stopping reconnect loop", pane_id)
@@ -961,6 +1096,43 @@ async def _reconnect_loop(
                     logger.error(f"Unexpected response: {response}, retrying...")
                     await asyncio.sleep(2)
                     continue
+
+                # beads-wi7y: register-verify. `connected` proves the WS
+                # round-trip but NOT durable visibility in the registry the
+                # watchdog reads (GET /peers) — after a daemon restart that
+                # registry is rebuilt only by reconnects. Confirm ours landed;
+                # on DEFINITE absence force a reconnect (+ one-shot alert past
+                # the threshold), on a TRANSIENT fetch error stay soft (never
+                # drop a healthy connection — §8). Runs on EVERY (re)connect, so
+                # it covers both fresh spawn (first pass) and reconnect.
+                verified = await _verify_registration(pane_id, session_id)
+                if verified is False:
+                    verify_fail += 1
+                    logger.warning(
+                        "register-verify: %s absent from registry after connect "
+                        "(fail %d)",
+                        session_id,
+                        verify_fail,
+                    )
+                    if (
+                        verify_fail >= _VERIFY_FAIL_ALERT_THRESHOLD
+                        and not _register_alert_sent
+                    ):
+                        await _emit_register_alert(
+                            my_name=response.get("display_name", display_name),
+                            role=_resolve_agent_role(),
+                            reason=(
+                                f"GET /peers/by-pane не находит peer после "
+                                f"{verify_fail} (re)connect"
+                            ),
+                        )
+                        _register_alert_sent = True
+                    await asyncio.sleep(_compute_backoff(verify_fail))
+                    continue  # forced reconnect — do NOT enter the message loop
+                if verified is True:
+                    verify_fail = 0
+                    _register_alert_sent = False
+                # verified is None → transient/inconclusive: proceed soft.
 
                 # Message loop — fully reactive, no polling tasks
                 try:
