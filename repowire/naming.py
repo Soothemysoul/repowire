@@ -57,3 +57,22 @@ def build_base_display_name(path: str | None, backend: AgentType | str) -> str:
     folder = sanitize_folder_name(Path(path).name) if path else "peer"
     backend_str = backend.value if isinstance(backend, AgentType) else str(backend)
     return f"{folder}-{backend_str}"
+
+
+def strip_backend_suffix(display_name: str) -> str | None:
+    """Inverse of the ``-{backend}`` suffix that ``build_base_display_name`` adds.
+
+    Strips a trailing ``-<backend.value>`` for any known ``AgentType``, returning
+    the bare stem (the role/folder part, e.g. ``telegram-claude-code`` ->
+    ``telegram``). Returns ``None`` when the name carries no recognized backend
+    suffix (or would strip to empty) — callers use that to bail out of
+    stem-aliasing rather than alias a name they cannot decompose.
+
+    Kept next to ``build_base_display_name`` so the build/strip pair stays a
+    single source of truth: the backend-suffix set must not drift between them.
+    """
+    for backend in AgentType:
+        suffix = f"-{backend.value}"
+        if display_name.endswith(suffix) and len(display_name) > len(suffix):
+            return display_name[: -len(suffix)]
+    return None
