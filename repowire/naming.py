@@ -6,6 +6,21 @@ import re
 from pathlib import Path
 
 from repowire.config.models import AgentType
+from repowire.protocol.peers import PeerRole
+
+# beads-rbox D1 (1a): a bare (suffix-stripped) name is addressable ONLY for peers
+# whose role auto-bypasses circles — the daemon's stem-alias fallback
+# (``_alias_resolve_unlocked``, beads-7ijt.1 Variant A) resolves a bare name only
+# for these roles. Mirrors ``Peer.bypasses_circles``; keep the two in sync. To
+# extend display-stripping to regular agents (1b), widen this set ONLY after the
+# daemon's bare-resolution is widened to match — otherwise the stripped name
+# 404s when an LLM copies it into ``notify_peer``.
+_BARE_RESOLVABLE_ROLES = frozenset(
+    r.value for r in (PeerRole.SERVICE, PeerRole.ORCHESTRATOR, PeerRole.HUMAN)
+)
+
+# A leading display token: ``[#notif-XXXXXXXX]`` (exactly 8 hex), at string start.
+_NOTIF_DISPLAY_RE = re.compile(r"^\[#(notif-[a-f0-9]{8})\]")
 
 # A pane attached to a grouped/linked tmux session (e.g. Tilix two-pane UI)
 # resolves ``#{session_name}`` to the *view* session, conventionally named
@@ -76,3 +91,63 @@ def strip_backend_suffix(display_name: str) -> str | None:
         if display_name.endswith(suffix) and len(display_name) > len(suffix):
             return display_name[: -len(suffix)]
     return None
+
+
+def _role_resolves_bare(role: PeerRole | str | None) -> bool:
+    """Whether a peer with ``role`` resolves when addressed by its bare stem.
+
+    Mirrors ``Peer.bypasses_circles`` (beads-7ijt.1 Variant A): only SERVICE /
+    ORCHESTRATOR / HUMAN are stem-aliased by the daemon. ``role`` may be a
+    ``PeerRole`` or its string value (the WS ``from_peer_role`` arrives as a str).
+    """
+    if role is None:
+        return False
+    value = role.value if isinstance(role, PeerRole) else str(role)
+    return value in _BARE_RESOLVABLE_ROLES
+
+
+def display_peer_name(
+    display_name: str,
+    role: PeerRole | str | None = None,
+    *,
+    strip_all: bool = False,
+) -> str:
+    """Return the display form of a peer name (beads-rbox D1).
+
+    Strips the ``-<backend>`` suffix when doing so is safe:
+
+    - ``strip_all=True`` (user-facing display, e.g. telegram): always strip —
+      the user never addresses a peer via ``notify_peer``, so an un-addressable
+      stem is harmless.
+    - otherwise (agent↔agent pane): strip ONLY when ``role`` resolves bare, so
+      the displayed name stays addressable. Regular AGENT names keep their full
+      ``-<backend>`` suffix (Variant A) to avoid the 404 footgun where an LLM
+      copies the displayed name back into ``notify_peer``.
+
+    Names with no recognized backend suffix are returned unchanged.
+    """
+    if not (strip_all or _role_resolves_bare(role)):
+        return display_name
+    return strip_backend_suffix(display_name) or display_name
+
+
+def display_text(text: str, *, drop_notif_marker: bool = False) -> str:
+    """Shorten a leading ``[#notif-XXXXXXXX]`` display token (beads-rbox D2).
+
+    Presentation-only — the caller must pass a copy used for display, never the
+    canonical wire ``text`` that correlation/ACK/interrupt-ledger logic parses.
+
+    - default (pane, D2 2a): ``[#notif-XXX]`` -> ``[notif-XXX]`` (drop only the
+      ``#``). The full ``notif-XXX`` stays visible so the receiver-LLM can still
+      author ``ACK notif-XXX``.
+    - ``drop_notif_marker=True`` (telegram, D2 2c): ``[#notif-XXX]`` -> ``[XXX]``
+      (drop ``#notif-``). The user never authors an intent-ACK.
+
+    Text whose start is not exactly ``[#notif-<8 hex>]`` is returned unchanged.
+    """
+    m = _NOTIF_DISPLAY_RE.match(text)
+    if not m:
+        return text
+    notif_id = m.group(1)  # "notif-XXXXXXXX"
+    inner = notif_id[len("notif-") :] if drop_notif_marker else notif_id
+    return f"[{inner}]{text[m.end():]}"

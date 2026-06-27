@@ -46,6 +46,7 @@ from repowire.hooks.utils import (
     wait_for_normal_mode,
     write_pane_runtime_metadata,
 )
+from repowire.naming import display_peer_name, display_text
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -703,9 +704,10 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 )
             return
         try:
-            ok = await asyncio.to_thread(
-                _tmux_send_keys, pane_id, f"@{from_peer}: {text}", interrupt
+            display = (
+                f"@{display_peer_name(from_peer, from_peer_role)}: {display_text(text)}"
             )
+            ok = await asyncio.to_thread(_tmux_send_keys, pane_id, display, interrupt)
             if ok:
                 logger.info(f"Injected notification from {from_peer}")
                 await _maybe_emit_receipt(
@@ -754,7 +756,10 @@ async def handle_message(data: dict, pane_id: str, websocket=None) -> None:
                 )
             return
         try:
-            msg = f"@{from_peer} [broadcast]: {text}"
+            msg = (
+                f"@{display_peer_name(from_peer, from_peer_role)} "
+                f"[broadcast]: {display_text(text)}"
+            )
             ok = await asyncio.to_thread(_tmux_send_keys, pane_id, msg, interrupt)
             if ok:
                 logger.info(f"Injected broadcast from {from_peer}")
