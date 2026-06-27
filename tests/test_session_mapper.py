@@ -26,6 +26,7 @@ def _ts(hours_ago: float) -> str:
 
 
 def test_prune_removes_old_mappings(tmp_path):
+    # beads-jj7l: prune is keyed on last_seen (real liveness), not updated_at.
     mappings = {
         "repow-dev-old1": {
             "session_id": "repow-dev-old1",
@@ -33,6 +34,7 @@ def test_prune_removes_old_mappings(tmp_path):
             "circle": "dev",
             "backend": AgentType.CLAUDE_CODE,
             "updated_at": _ts(100),
+            "last_seen": _ts(100),
         },
         "repow-dev-recent": {
             "session_id": "repow-dev-recent",
@@ -40,6 +42,7 @@ def test_prune_removes_old_mappings(tmp_path):
             "circle": "dev",
             "backend": AgentType.CLAUDE_CODE,
             "updated_at": _ts(1),
+            "last_seen": _ts(1),
         },
     }
     registry = _make_registry(tmp_path, mappings)
@@ -66,7 +69,8 @@ def test_prune_removes_entries_with_no_timestamp(tmp_path):
         message_router=__import__("unittest.mock", fromlist=["MagicMock"]).MagicMock(),
         persistence_path=path,
     )
-    # __post_init__ sets updated_at, so this entry is fresh — won't be pruned
+    # beads-jj7l: no last_seen → bootstrap-lenient → kept for rehydration
+    # (a live pre-jj7l session must not be false-pruned into an orphan).
     assert registry.prune_offline() == 0
 
 
@@ -78,6 +82,7 @@ def test_prune_persists_to_disk(tmp_path):
             "circle": "dev",
             "backend": AgentType.CLAUDE_CODE,
             "updated_at": _ts(200),
+            "last_seen": _ts(200),  # beads-jj7l: prune keyed on last_seen
         },
     }
     registry = _make_registry(tmp_path, mappings)
@@ -91,13 +96,16 @@ def test_prune_persists_to_disk(tmp_path):
 
 
 def test_prune_removes_entries_with_bad_timestamp(tmp_path):
+    # beads-jj7l: an unparseable last_seen is corrupt (distinct from the
+    # absent-last_seen bootstrap case) → treated as stale and pruned.
     mappings = {
         "repow-dev-badtimestamp": {
             "session_id": "repow-dev-badtimestamp",
             "display_name": "badtimestamp",
             "circle": "dev",
             "backend": AgentType.CLAUDE_CODE,
-            "updated_at": "not-a-valid-iso-timestamp",
+            "updated_at": _ts(1),
+            "last_seen": "not-a-valid-iso-timestamp",
         },
     }
     registry = _make_registry(tmp_path, mappings)
