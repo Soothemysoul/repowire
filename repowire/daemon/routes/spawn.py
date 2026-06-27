@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from repowire.config.models import AgentType
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_config, get_peer_registry
+from repowire.daemon.peer_registry import AmbiguousPeerError
 from repowire.naming import build_base_display_name
 from repowire.protocol.peers import PeerStatus
 from repowire.spawn import SpawnConfig, SpawnResult, kill_peer, kill_peer_by_pane, spawn_peer
@@ -286,7 +287,17 @@ async def kill(
     if request.peer_id or request.peer_name:
         peer_registry = get_peer_registry()
         identifier = request.peer_id or request.peer_name
-        peer = await peer_registry.get_peer(identifier, circle=request.circle)
+        # beads-bof3: killing a namesake by name without a circle could hit the
+        # wrong circle's peer — fail fast with an actionable error instead.
+        try:
+            peer = await peer_registry.get_peer(
+                identifier, circle=request.circle, raise_ambiguous=True
+            )
+        except AmbiguousPeerError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e),
+            )
         if peer is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

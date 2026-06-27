@@ -393,6 +393,101 @@ class TestNotify:
         assert r.status_code == 200
 
 
+# -- Ambiguous peer addressing (beads-bof3) --
+
+
+class TestAmbiguousAddressing:
+    @staticmethod
+    async def _register(registry, sid, name, circle, role=None):
+        from repowire.protocol.peers import Peer, PeerRole, PeerStatus
+        await registry.register_peer(Peer(
+            peer_id=sid, display_name=name, path=f"/{name}", machine="localhost",
+            circle=circle, role=role or PeerRole.AGENT, status=PeerStatus.ONLINE,
+        ))
+
+    async def _two_pms(self, client):
+        from repowire.daemon.deps import get_peer_registry
+        registry = get_peer_registry()
+        await self._register(registry, "sid-drafter-pm", "pm", "project-drafter")
+        await self._register(registry, "sid-abt-pm", "pm", "project-agents-brain-team")
+        return registry
+
+    async def test_notify_bypass_sender_ambiguous_target_409(self, client):
+        """Cross-circle-capable sender (bypass) naming an ambiguous target without
+        a circle gets an actionable 409, not a silent preference pick."""
+        await self._two_pms(client)
+        r = await client.post("/notify", json={
+            "from_peer": "director-claude-code",
+            "to_peer": "pm",
+            "text": "release ACK",
+            "bypass_circle": True,
+        })
+        assert r.status_code == 409
+        detail = r.json()["detail"]
+        assert "ambiguous peer 'pm'" in detail
+        assert "project-agents-brain-team" in detail and "project-drafter" in detail
+        assert "specify circle=" in detail
+
+    async def test_notify_with_circle_passes_precheck(self, client):
+        """Explicit circle= disambiguates → past the ambiguity guard (then 503,
+        target has no live WS) — NOT a 409."""
+        await self._two_pms(client)
+        r = await client.post("/notify", json={
+            "from_peer": "director-claude-code",
+            "to_peer": "pm",
+            "circle": "project-agents-brain-team",
+            "text": "release ACK",
+            "bypass_circle": True,
+        })
+        assert r.status_code != 409
+
+    async def test_notify_project_sender_layer1_no_false_ambiguity(self, client):
+        """Layer-1 INTACT at the route: a project-scoped authenticated sender
+        (resolved, non-bypass) reaching its OWN-circle namesake must NOT trip the
+        ambiguity guard — the precheck is gated on sender cross-capability."""
+        registry = await self._two_pms(client)
+        await self._register(
+            registry, "sid-abt-head", "backend-head", "project-agents-brain-team"
+        )
+        r = await client.post("/notify", json={
+            "from_peer": "backend-head",
+            "from_peer_id": "sid-abt-head",
+            "to_peer": "pm",
+            "text": "status",
+        })
+        assert r.status_code != 409  # resolved to own-circle pm, no fail-fast
+
+    async def test_query_bypass_sender_ambiguous_target_errors(self, client):
+        """Query precheck must not report a foreign namesake's status — it returns
+        an actionable ambiguity error instead."""
+        await self._two_pms(client)
+        r = await client.post("/query", json={
+            "to_peer": "pm",
+            "text": "status?",
+        })
+        # CLI query (no from_peer) auto-bypasses → cross_capable → ambiguity error.
+        assert r.status_code == 200
+        assert "ambiguous peer 'pm'" in (r.json().get("error") or "")
+
+    async def test_kill_ambiguous_peer_name_409(self, client):
+        """Kill by name without a circle on an ambiguous namesake is dangerous —
+        fail fast with an actionable error rather than killing the wrong one."""
+        await self._two_pms(client)
+        r = await client.post("/kill", json={"peer_name": "pm"})
+        assert r.status_code == 409
+        assert "ambiguous peer 'pm'" in r.json()["detail"]
+
+    async def test_kill_with_circle_disambiguates(self, client):
+        """With circle= the kill resolves a single peer (here it has no pane_id →
+        404), proving the ambiguity guard did NOT fire."""
+        await self._two_pms(client)
+        r = await client.post(
+            "/kill", json={"peer_name": "pm", "circle": "project-drafter"}
+        )
+        assert r.status_code == 404
+        assert "no pane_id" in r.json()["detail"].lower()
+
+
 # -- Broadcast --
 
 
