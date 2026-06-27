@@ -162,14 +162,31 @@ reuse = (
 > регидрации `peer_in_memory=True` → None → fresh-path → потенциальный churn. §5.3 это
 > устраняет малой правкой.
 
-### 5.4 DoD#3 — отсев «давно мёртв»
-- `prune_offline`-on-load судит по **`last_seen`** (через обновлённый `_is_stale`: брать
-  `last_seen`, fallback `updated_at`). Mapping с `last_seen` старше `prune_max_age_hours` (24h) —
-  «давно мёртв», не регидрируется (отсеян до регидрации).
-- Регидрированные-но-мёртвые (пережили prune, но процесс мёртв): остаются OFFLINE, не
-  реконнектятся → (a) zombie-offline watchdog рипает на 3600s; (b) `_evict_stale_peers` удаляет,
-  когда `last_seen`(restart-time)+`prune_max_age` истёк. Само-заживает, ложного «alive» нет
-  (OFFLINE, не ONLINE). DoD#3 ✓.
+### 5.4 DoD#3 — отсев «давно мёртв» + bootstrap-leniency (РЕФАЙНМЕНТ, notif-c0eceae1)
+
+`prune_offline`-on-load судит по **`last_seen`** (реальная liveness), НЕ по `updated_at`
+(Факт F: `updated_at` двигается только на мутацию mapping → ненадёжен). Новый `_is_stale`:
+
+- **`last_seen` ОТСУТСТВУЕТ → bootstrap-lenient: НЕ stale (keep, регидрировать).** Mapping без
+  `last_seen` — из до-jj7l-эпохи (**активационный restart**: старый демон никогда не писал
+  `last_seen`). Liveness неизвестна → еррим В СТОРОНУ регидрации, НЕ прунить по `updated_at`.
+  **Обоснование (асимметрия рисков):** ложно-сохранённый МЁРТВЫЙ peer само-заживает
+  (регидрирован OFFLINE → zombie-offline reap 60мин / `_evict_stale_peers` после max-age);
+  ложно-спруненный ЖИВОЙ peer = orphan — ровно баг, ради которого jj7l. Это безопасность
+  САМОГО активационного окна: живая сессия не должна стать orphan на том restart'е, что
+  поставляет jj7l. Срабатывает ТОЛЬКО когда `last_seen` absent.
+- **`last_seen` есть и старше `prune_max_age_hours` (24h) → stale (прунится).** Обычный
+  age-prune — действует после ПЕРВОГО jj7l-restart, когда `last_seen` уже персистится
+  (`_snapshot_liveness` снимает `peer.last_seen` в mapping при flush).
+- **`last_seen` есть, но не парсится → corrupt → stale.** Отличается от absent-кейса.
+
+Регидрированные-но-мёртвые: остаются OFFLINE, не реконнектятся → (a) zombie-offline watchdog
+рипает на 3600s; (b) `_evict_stale_peers` удаляет, когда `last_seen`(restart-time)+`prune_max_age`
+истёк. Само-заживает, ложного «alive» нет (OFFLINE, не ONLINE). DoD#3 ✓.
+
+> Контракт `prune_offline` намеренно изменён (prune по `last_seen`, не `updated_at`). Три теста
+> в `tests/test_session_mapper.py` переведены на `last_seen`-fixture (intent сохранён). Новый
+> `test_activation_restart_rehydrates_all_without_last_seen` фиксирует безопасность окна.
 
 ### 5.5 Lazy-Repair соблюдён
 Регидрация — **однократное действие на старте**, не таймер/loop. Снятие `last_seen` в mapping —

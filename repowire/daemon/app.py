@@ -90,7 +90,8 @@ def create_app(
             transport=transport,
             persistence_path=Path.home() / ".repowire" / "sessions.json",
         )
-        peer_registry.prune_offline(max_age_hours=cfg.daemon.prune_max_age_hours)
+        # beads-jj7l: prune + rehydrate now live in peer_registry.start() (below),
+        # a single source shared by prod and test lifespans.
 
         # Store in app state for route handlers
         app.state.config = cfg

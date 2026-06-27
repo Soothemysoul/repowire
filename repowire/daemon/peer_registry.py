@@ -80,6 +80,11 @@ class SessionMapping:
     path: str | None = None
     role: PeerRole = PeerRole.AGENT
     updated_at: str | None = None
+    # beads-jj7l: real liveness (last activity), persisted so it survives a
+    # daemon restart. Distinct from updated_at (which only moves on a mapping
+    # mutation, not on each message — an unreliable liveness proxy). None means
+    # this mapping predates jj7l (activation restart): liveness unknown.
+    last_seen: str | None = None
 
     def __post_init__(self) -> None:
         if self.updated_at is None:
@@ -209,11 +214,25 @@ class PeerRegistry:
         except OSError as e:
             logger.error(f"Failed to read session mappings file: {e}")
 
+    def _snapshot_liveness(self) -> None:
+        """beads-jj7l: copy each live peer's last_seen into its mapping so real
+        liveness is persisted. Called before a flush. Marks dirty only when a
+        value actually changes, so an idle daemon still skips the write."""
+        for peer_id, peer in self._peers.items():
+            mapping = self._mappings.get(peer_id)
+            if mapping is None or peer.last_seen is None:
+                continue
+            iso = peer.last_seen.isoformat()
+            if mapping.last_seen != iso:
+                mapping.last_seen = iso
+                self._mappings_dirty = True
+
     def _persist_mappings(self) -> None:
         """Save session mappings to disk atomically (debounced via dirty flag).
 
         Called from lazy_repair and shutdown, not on every mutation.
         """
+        self._snapshot_liveness()
         if not self._mappings_dirty:
             return
         tmp_path = self._mappings_path.with_suffix(".json.tmp")
@@ -289,7 +308,15 @@ class PeerRegistry:
     # ------------------------------------------------------------------
 
     async def start(self) -> None:
-        """Start the peer registry."""
+        """Start the peer registry.
+
+        beads-jj7l: prune long-dead mappings, then rehydrate the survivors into
+        ``_peers`` as OFFLINE so ``GET /peers`` reflects pre-restart peers
+        immediately (HasPeer=true) — a live-but-not-yet-reconnected peer is not
+        falsely reaped as an orphan during the reconnect window.
+        """
+        self.prune_offline(max_age_hours=self._config.daemon.prune_max_age_hours)
+        self.rehydrate_from_mappings()
         logger.info("PeerRegistry started with unified WebSocket backend")
 
     async def stop(self) -> None:
@@ -731,11 +758,18 @@ class PeerRegistry:
                 age = (now - peer.last_seen).total_seconds() if peer.last_seen else 0.0
                 reuse = (
                     peer.status == PeerStatus.RESTARTING
+                    # beads-jj7l: a peer rehydrated after a daemon restart must
+                    # reuse its identity on reconnect regardless of the TTL —
+                    # otherwise a late reconnect falls through to the fresh path,
+                    # where the still-fresh offline_since blocks name-takeover and
+                    # mints a churned "-2" duplicate with a new peer_id.
+                    or peer.metadata.get("_rehydrated")
                     or self._is_singleton_role(path)
                     or age <= reconnect_ttl
                 )
                 if reuse:
                     _set_peer_status(peer, PeerStatus.ONLINE)
+                    peer.metadata.pop("_rehydrated", None)
                     if role is not None:
                         peer.role = role
                     if pane_id:
@@ -1728,10 +1762,23 @@ class PeerRegistry:
 
     @staticmethod
     def _is_stale(mapping: SessionMapping, cutoff: datetime) -> bool:
-        if not mapping.updated_at:
-            return True
+        """beads-jj7l: staleness is keyed on real liveness (last_seen), NOT
+        updated_at (which only moves on a mapping mutation — a live session that
+        hasn't re-registered has a stale updated_at).
+
+        - last_seen ABSENT → bootstrap-lenient: NOT stale (keep for rehydration).
+          A mapping without last_seen predates jj7l (activation restart);
+          liveness is unknown, so err toward keeping it. A wrongly-kept dead
+          peer self-heals (rehydrated OFFLINE → zombie-offline reap at 60 min);
+          a wrongly-pruned live peer becomes an orphan (the bug jj7l fixes).
+        - last_seen present & older than cutoff → stale (normal age-prune, once
+          last_seen has been persisted after the first jj7l restart).
+        - last_seen present but unparseable → corrupt → stale.
+        """
+        if not mapping.last_seen:
+            return False
         try:
-            return datetime.fromisoformat(mapping.updated_at) < cutoff
+            return datetime.fromisoformat(mapping.last_seen) < cutoff
         except ValueError:
             return True
 
@@ -1757,6 +1804,57 @@ class PeerRegistry:
             )
 
         return pruned_count
+
+    def rehydrate_from_mappings(self) -> int:
+        """beads-jj7l: rebuild ``_peers`` from surviving mappings at startup.
+
+        Root cause (s8di): ``_peers`` (the only source of ``GET /peers``, read by
+        the external no_peer_record watchdog) is wiped on every daemon restart;
+        a live session reappears ONLY when its WS-hook reconnects. Until then it
+        is mesh-invisible (``HasPeer=false``) and the watchdog reaps it as an
+        orphan at 60 min. Rehydrating each surviving mapping as OFFLINE makes
+        ``HasPeer=true`` immediately, so a live-but-not-yet-reconnected peer is
+        not falsely reaped during the reconnect window.
+
+        Each rehydrated peer:
+        - status OFFLINE — honest (no live transport yet); a record nonetheless.
+        - last_seen / offline_since = restart-time — fresh reconnect-grace clock
+          (q51 takeover & age-eviction count from the restart, not from a stale
+          pre-restart value).
+        - pane_id None — the real reconnect re-binds the pane (no mis-routing).
+        - metadata["_rehydrated"] = True — transient (never persisted) marker so
+          ``_try_reuse_by_identity_unlocked`` reuses this identity on reconnect
+          regardless of the 120 s offline-reuse TTL, with no display-name churn.
+
+        Call AFTER ``prune_offline`` (long-dead mappings already dropped). Idempotent:
+        a peer_id already live in ``_peers`` is left untouched. Returns the count
+        rehydrated.
+        """
+        now = datetime.now(timezone.utc)
+        rehydrated = 0
+        for session_id, mapping in self._mappings.items():
+            if session_id in self._peers:
+                continue
+            peer = Peer(
+                peer_id=session_id,
+                display_name=mapping.display_name,
+                circle=mapping.circle,
+                backend=mapping.backend,
+                role=mapping.role,
+                status=PeerStatus.OFFLINE,
+                last_seen=now,
+                offline_since=now,
+                pane_id=None,
+                tmux_session=None,
+                path=mapping.path or "",
+                machine="unknown",
+                metadata={"_rehydrated": True},
+            )
+            self._peers[session_id] = peer
+            rehydrated += 1
+        if rehydrated:
+            logger.info("Rehydrated %d peers from session mappings (OFFLINE)", rehydrated)
+        return rehydrated
 
     # ------------------------------------------------------------------
     # Maintenance
