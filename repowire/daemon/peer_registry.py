@@ -82,6 +82,29 @@ class SessionMapping:
 
 
 # ---------------------------------------------------------------------------
+# Addressing ambiguity (beads-bof3)
+# ---------------------------------------------------------------------------
+
+
+class AmbiguousPeerError(ValueError):
+    """A public notify/ask/kill named a peer that matches >1 circle with no
+    circle/to_peer_id to disambiguate.
+
+    Subclass of ValueError so existing route error-handling (ValueError ->
+    error-response) catches it without changes. The message lists the matching
+    circles (sorted) so the caller immediately knows what circle= to specify.
+    """
+
+    def __init__(self, name: str, circles: list[str]) -> None:
+        self.name = name
+        self.circles = circles
+        super().__init__(
+            f"ambiguous peer '{name}': matches "
+            f"[{', '.join(circles)}], specify circle="
+        )
+
+
+# ---------------------------------------------------------------------------
 # PeerRegistry
 # ---------------------------------------------------------------------------
 
@@ -300,6 +323,40 @@ class PeerRegistry:
             return connected, bool(peer.pane_id), last_seen
 
         return max(candidates, key=preference)
+
+    def _resolve_unique_unlocked(
+        self,
+        identifier: str,
+        circle: str | None = None,
+        *,
+        raise_ambiguous: bool = False,
+    ) -> Peer | None:
+        """Strict-resolve a peer (beads-bof3 Layer 2). Must hold lock.
+
+        Like _lookup_peer_unlocked, but when ``raise_ambiguous`` is set and the
+        display_name matches peers across MORE THAN ONE circle (with no
+        ``circle`` to disambiguate), raises AmbiguousPeerError instead of a
+        silent preference-tiebreak pick. A same-circle duplicate (registry
+        anomaly, one circle) is NOT cross-circle ambiguity — best-effort stays.
+
+        With ``raise_ambiguous`` False this is exactly _lookup_peer_unlocked, so
+        internal liveness/repair callers keep their best-effort tiebreak and
+        never raise.
+        """
+        if identifier in self._peers:
+            return self._peers[identifier]
+        matches = [p for p in self._peers.values() if p.display_name == identifier]
+        if circle:
+            matches = [p for p in matches if p.circle == circle]
+        if not matches:
+            return None
+        if len(matches) == 1:
+            return matches[0]
+        circles = sorted({p.circle for p in matches})
+        if raise_ambiguous and len(circles) > 1:
+            raise AmbiguousPeerError(identifier, circles)
+        # Best-effort preference tiebreak (same-circle dup, or raise disabled).
+        return self._lookup_peer_unlocked(identifier, circle=circle)
 
     @staticmethod
     def _sanitize_folder_name(name: str) -> str:
@@ -872,10 +929,24 @@ class PeerRegistry:
     # Peer accessors
     # ------------------------------------------------------------------
 
-    async def get_peer(self, identifier: str, circle: str | None = None) -> Peer | None:
-        """Get a peer by session_id or display_name."""
+    async def get_peer(
+        self,
+        identifier: str,
+        circle: str | None = None,
+        *,
+        raise_ambiguous: bool = False,
+    ) -> Peer | None:
+        """Get a peer by session_id or display_name.
+
+        ``raise_ambiguous`` (beads-bof3): when set, a display_name matching peers
+        across >1 circle with no ``circle`` raises AmbiguousPeerError instead of a
+        silent preference pick. Default False keeps every existing caller's
+        best-effort behavior.
+        """
         async with self._lock:
-            return self._lookup_peer_unlocked(identifier, circle=circle)
+            return self._resolve_unique_unlocked(
+                identifier, circle=circle, raise_ambiguous=raise_ambiguous
+            )
 
     async def get_peer_by_pane(self, pane_id: str) -> Peer | None:
         """Lookup peer by tmux pane_id."""
@@ -949,7 +1020,18 @@ class PeerRegistry:
             scoped = self._lookup_peer_unlocked(to_peer, circle=from_obj.circle)
             if scoped is not None:
                 return scoped
-        return self._lookup_peer_unlocked(to_peer, circle=None)
+        # beads-bof3 Layer 2: a project-scoped sender that reaches here (no
+        # same-circle namesake) is NOT cross_capable — the circle guard
+        # (_check_circle_access_by_peers) DENIES its genuine cross-circle attempt,
+        # so Layer-1 semantics are preserved by keeping best-effort here. A
+        # cross-circle-capable sender (bypass / orchestrator-service /
+        # unresolved) has no reliable own-circle to disambiguate a namesake:
+        # fail fast on a >1-circle match instead of a silent preference pick
+        # (the director->pm mis-delivery incident).
+        cross_capable = bypass_circle or from_obj is None or from_obj.bypasses_circles
+        return self._resolve_unique_unlocked(
+            to_peer, circle=None, raise_ambiguous=cross_capable
+        )
 
     def _resolve_pair_unlocked(
         self,

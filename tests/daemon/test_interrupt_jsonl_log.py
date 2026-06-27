@@ -21,7 +21,7 @@ def _make_peer(display_name: str, role: PeerRole) -> MagicMock:
 
 
 def _fake_registry(monkeypatch, from_peer, to_peer):
-    async def fake_get_peer(name, circle=None):
+    async def fake_get_peer(name, circle=None, *, raise_ambiguous=False):
         return {
             from_peer.display_name: from_peer,
             to_peer.display_name: to_peer,

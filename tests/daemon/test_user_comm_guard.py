@@ -40,7 +40,7 @@ def _make_peer(display_name: str, role: PeerRole) -> MagicMock:
 def _make_fake_registry(monkeypatch, from_peer, to_peer):
     """Patch get_peer_registry in routes.messages with controlled peer objects."""
 
-    async def fake_get_peer(identifier, circle=None):
+    async def fake_get_peer(identifier, circle=None, *, raise_ambiguous=False):
         if identifier == to_peer.display_name:
             return to_peer
         if identifier == from_peer.display_name:

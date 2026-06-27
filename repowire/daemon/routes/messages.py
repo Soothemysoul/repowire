@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from repowire.config.models import DEFAULT_QUERY_TIMEOUT
 from repowire.daemon.auth import require_auth
 from repowire.daemon.deps import get_app_state, get_peer_registry
+from repowire.daemon.peer_registry import AmbiguousPeerError
 from repowire.daemon.routes._shared import OkResponse
 from repowire.daemon.websocket_transport import TransportError
 from repowire.protocol.peers import PeerRole, PeerStatus
@@ -178,8 +179,26 @@ async def query_peer(
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
 
-    # Check peer state before attempting query
-    peer = await peer_registry.get_peer(request.to_peer, circle=request.circle)
+    # Check peer state before attempting query. A cross-circle-capable caller
+    # (CLI/bypass, orchestrator/service, or unresolved sender) has no reliable
+    # own-circle to disambiguate a namesake — fail fast on an ambiguous target
+    # instead of reporting a foreign namesake's status (beads-bof3). A
+    # project-scoped sender keeps Layer-1 sender-circle auto-disambig (hqvm).
+    from_obj = (
+        await peer_registry.get_peer(request.from_peer) if request.from_peer else None
+    )
+    cross_capable = (
+        request.bypass_circle
+        or request.from_peer is None
+        or from_obj is None
+        or from_obj.bypasses_circles
+    )
+    try:
+        peer = await peer_registry.get_peer(
+            request.to_peer, circle=request.circle, raise_ambiguous=cross_capable
+        )
+    except AmbiguousPeerError as e:
+        return QueryResponse(error=str(e))
     if peer:
         if peer.status == PeerStatus.BUSY:
             return QueryResponse(
@@ -225,8 +244,28 @@ async def notify_peer(
     peer_registry = get_peer_registry()
     await peer_registry.lazy_repair()
 
-    to_peer_obj = await peer_registry.get_peer(request.to_peer, circle=request.circle)
+    # beads-bof3: fail fast when a cross-circle-capable sender (bypass,
+    # orchestrator/service, or unresolved) names an ambiguous target without a
+    # circle, instead of a silent preference pick. A project-scoped sender keeps
+    # Layer-1 sender-circle auto-disambig (hqvm) — gated below on cross_capable.
     from_peer_obj = await peer_registry.get_peer(request.from_peer)
+    # A reverse-route AUTO-(N)ACK receipt (system-generated, no LLM to act on a
+    # 409) has its own anti-leak in registry.notify() — it is DROPPED on an
+    # ambiguous target rather than fail-fast. So the precheck never raises for it.
+    cross_capable = not request.reverse_receipt and (
+        request.bypass_circle
+        or from_peer_obj is None
+        or from_peer_obj.bypasses_circles
+    )
+    try:
+        to_peer_obj = await peer_registry.get_peer(
+            request.to_peer, circle=request.circle, raise_ambiguous=cross_capable
+        )
+    except AmbiguousPeerError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e),
+        )
     if (
         to_peer_obj is not None
         and from_peer_obj is not None
