@@ -26,6 +26,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 
 from repowire.config.models import DEFAULT_DAEMON_URL
+from repowire.naming import display_peer_name, display_text
 from repowire.telegram.state import (
     append_notif_entry,
     load_state,
@@ -187,9 +188,14 @@ class TelegramPeer:
         t = msg.get("type", "")
         who = msg.get("from_peer", "?")
         text = msg.get("text", "")
+        # beads-rbox site B (user-facing): strip the -<backend> suffix for ANY
+        # peer and drop the #notif- marker. Raw who/text are kept below for the
+        # reply-map + correlation extraction (canonical id untouched).
+        shown_who = display_peer_name(who, strip_all=True)
+        shown_text = display_text(text, drop_notif_marker=True)
 
         if t == "notify":
-            msg_id = await self._tg_send(f"*@{_esc(who)}*\n{_esc(text)}")
+            msg_id = await self._tg_send(f"*@{_esc(shown_who)}*\n{_esc(shown_text)}")
             if msg_id is not None:
                 m = _NOTIF_ID_RE.search(text)
                 notif_id = m.group(1) if m else None
@@ -207,9 +213,9 @@ class TelegramPeer:
                 state = load_state(self._state_path)
                 self._persist_state(state["chats"])
         elif t == "query":
-            await self._tg_send(f"❓ *@{_esc(who)}*\n{_esc(text)}")
+            await self._tg_send(f"❓ *@{_esc(shown_who)}*\n{_esc(shown_text)}")
         elif t == "broadcast":
-            await self._tg_send(f"📢 *@{_esc(who)}*\n{_esc(text)}")
+            await self._tg_send(f"📢 *@{_esc(shown_who)}*\n{_esc(shown_text)}")
         elif t == "ping" and self._ws:
             await self._ws.send(json.dumps({"type": "pong"}))
 
