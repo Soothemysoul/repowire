@@ -478,14 +478,21 @@ class TestAmbiguousAddressing:
         assert "ambiguous peer 'pm'" in r.json()["detail"]
 
     async def test_kill_with_circle_disambiguates(self, client):
-        """With circle= the kill resolves a single peer (here it has no pane_id →
-        404), proving the ambiguity guard did NOT fire."""
-        await self._two_pms(client)
+        """With circle= the kill resolves a single peer, proving the ambiguity
+        guard did NOT fire. beads-99oh: a peer with no pane_id is now demoted to
+        OFFLINE (cleaned_registry) and returns 200 — kill = "bring to OFFLINE",
+        not "must kill a live pane"."""
+        registry = await self._two_pms(client)
         r = await client.post(
             "/kill", json={"peer_name": "pm", "circle": "project-drafter"}
         )
-        assert r.status_code == 404
-        assert "no pane_id" in r.json()["detail"].lower()
+        assert r.status_code == 200
+        body = r.json()
+        assert body["cleaned_registry"] is True
+        assert body["pane_killed"] is False  # no pane_id → nothing to kill
+        from repowire.protocol.peers import PeerStatus
+        peer = await registry.get_peer("pm", circle="project-drafter")
+        assert peer.status is PeerStatus.OFFLINE
 
 
 # -- Broadcast --

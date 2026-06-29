@@ -62,8 +62,13 @@ def _restart_peer_cap_sec() -> float:
     """beads-k1b3: how long a peer may stay RESTARTING before the liveness sweep
     gives up and demotes it to OFFLINE. Sized to the respawn+resume timescale
     (minutes) with headroom; past it the restart is stuck = a genuine failure.
-    Read lazily from the env so operator overrides / tests take effect."""
-    return float(os.environ.get("REPOWIRE_RESTART_PEER_CAP_SEC", "900"))
+    Read lazily from the env so operator overrides / tests take effect.
+
+    beads-99oh: default lowered 900s (15min) -> 180s (3min). 15 minutes left a
+    stuck restart wedged for far too long — a singleton spawn no-op'd and notifies
+    were held the whole time. 3 minutes still comfortably outlasts a real
+    respawn+resume while unwedging a genuine failure ~5x faster."""
+    return float(os.environ.get("REPOWIRE_RESTART_PEER_CAP_SEC", "180"))
 
 # ---------------------------------------------------------------------------
 # SessionMapping dataclass (previously in session_mapper.py)
@@ -1972,6 +1977,25 @@ class PeerRegistry:
             self._save_events()
             self._persist_mappings()
 
+    def is_restart_stuck(self, peer: Peer, *, now: datetime | None = None) -> bool:
+        """beads-99oh: True if ``peer`` is a RESTARTING peer whose restart has
+        exceeded the restart cap — a STUCK restart (genuine failure), as opposed
+        to a healthy in-flight self-restart (beads-k1b3, still within the cap).
+
+        Single source of truth for "stuck restart", consumed by both:
+        - ``liveness_tick`` — to demote a stuck restart to OFFLINE + clear spool;
+        - ``/spawn`` singleton-dedup — to relaunch a stuck singleton instead of
+          treating it as live and no-op'ing the respawn.
+
+        A RESTARTING peer with no ``restarting_since`` is NOT considered stuck
+        (matches liveness_tick's pre-existing ``restarting_since is not None``
+        guard — such a record is malformed/rare and is left for the normal
+        reconnect path rather than force-demoted)."""
+        if peer.status != PeerStatus.RESTARTING or peer.restarting_since is None:
+            return False
+        now = now or datetime.now(timezone.utc)
+        return (now - peer.restarting_since).total_seconds() > _restart_peer_cap_sec()
+
     async def liveness_tick(self) -> None:
         """Reconcile peer.status with transport connection state.
 
@@ -1991,7 +2015,6 @@ class PeerRegistry:
             return
 
         now = datetime.now(timezone.utc)
-        cap = _restart_peer_cap_sec()
         async with self._lock:
             ghosts = [
                 p.peer_id for p in self._peers.values()
@@ -2008,11 +2031,10 @@ class PeerRegistry:
             # OFFLINE so incoming notifies stop being held and start rejecting
             # (503), and its orphaned hold-queue spool is cleared. A fresh
             # restart (restarting_since within the cap) is left untouched.
+            # beads-99oh: "stuck" lives in is_restart_stuck (shared with /spawn).
             stuck_restarts = [
                 p.peer_id for p in self._peers.values()
-                if p.status == PeerStatus.RESTARTING
-                and p.restarting_since is not None
-                and (now - p.restarting_since).total_seconds() > cap
+                if self.is_restart_stuck(p, now=now)
             ]
 
         for peer_id in ghosts:
@@ -2022,6 +2044,11 @@ class PeerRegistry:
         for peer_id in stuck_restarts:
             await self.mark_offline(peer_id)
             hold_queue.clear(self._holdq_dir, peer_id)
+            # TODO(beads-99oh A3): optionally emit a reaper signal here to auto
+            # respawn the stuck singleton instead of only demoting it. Deferred —
+            # the daemon would need the original spawn request (path/command/
+            # circle), which the registry does not hold. For now demote-to-OFFLINE
+            # + the lowered cap + /spawn relaunch (is_restart_stuck) unwedge it.
 
         if ghosts or resurrected or stuck_restarts:
             logger.info(

@@ -88,9 +88,17 @@ class KillRequest(BaseModel):
 
 
 class KillResponse(BaseModel):
-    """Result of a successful kill."""
+    """Result of a successful kill.
+
+    beads-99oh: kill semantics are "bring the peer to OFFLINE", not "must kill a
+    live pane". ``cleaned_registry`` reports the registry record was demoted to
+    OFFLINE; ``pane_killed`` reports whether a live tmux pane was actually killed
+    (False when the pane was already dead or the peer had no pane_id).
+    """
 
     ok: bool = True
+    cleaned_registry: bool = False
+    pane_killed: bool = False
 
 
 def _command_allowed(command: str, allowed: list[str]) -> bool:
@@ -228,9 +236,18 @@ async def spawn(
     if role_name in singleton_roles:
         peer_registry = get_peer_registry()
 
-        # 1. Already online — return existing peer info, no spawn needed.
+        # 1. Already live — return existing peer info, no spawn needed.
+        #    beads-99oh: ONLINE/BUSY and a HEALTHY in-flight self-restart
+        #    (RESTARTING within the restart cap, beads-k1b3) count as live and
+        #    are deduped. A STUCK restart (RESTARTING past the cap — process
+        #    gone, never returned) is NOT live: fall through and relaunch it
+        #    instead of no-op'ing the respawn (the wedge this fixes).
         existing = await peer_registry.get_peer(canonical_name, circle=request.circle)
-        if existing is not None and existing.status != PeerStatus.OFFLINE:
+        if (
+            existing is not None
+            and existing.status != PeerStatus.OFFLINE
+            and not peer_registry.is_restart_stuck(existing)
+        ):
             return SpawnResponse(
                 display_name=existing.display_name,
                 tmux_session=existing.tmux_session or "",
@@ -299,22 +316,18 @@ async def kill(
                 detail=str(e),
             )
         if peer is None:
+            # Genuinely unknown identifier — nothing in the registry to clean.
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Peer not found: {identifier}",
             )
-        if not peer.pane_id:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Peer has no pane_id registered: {identifier}",
-            )
-        ok = kill_peer_by_pane(peer.pane_id)
-        if not ok:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Tmux pane not found for peer: {identifier}",
-            )
-        return KillResponse()
+        # beads-99oh: kill = "bring this peer to OFFLINE". Always demote the
+        # registry record (even if the pane is already dead / there is no
+        # pane_id) so a stuck RESTARTING record cannot survive a kill and
+        # re-wedge the next spawn. The pane kill is best-effort on top.
+        await peer_registry.mark_offline(peer.peer_id)
+        pane_killed = kill_peer_by_pane(peer.pane_id) if peer.pane_id else False
+        return KillResponse(cleaned_registry=True, pane_killed=pane_killed)
 
     # Legacy tmux_session path — back-compat, behavior unchanged
     if not request.tmux_session:
